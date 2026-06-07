@@ -85,7 +85,7 @@
 			"displayName": "macOS HarmonyOS Build",
 			"description": "Build for HarmonyOS using DevEco toolchain",
 			"environment": {
-				"TOOL_HOME": "/Applications/DevEco-Studio.app/Contents",
+				"TOOL_HOME": "C:/Program Files/Huawei/DevEco Studio",
 				"HARMONY_SDK_PATH": "$env{TOOL_HOME}/sdk/default/openharmony/native",
 				"HARMONY_CMAKE_PATH": "$env{HARMONY_SDK_PATH}/build-tools/cmake/bin"
 			},
