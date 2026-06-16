@@ -1,34 +1,34 @@
-# HJGraphMusicPlayer Architecture
+# HJGraphMusicPlayer 架构
 
-## Purpose
-This document describes the actual architecture and control semantics of `HJGraphMusicPlayer`.
+## 目的
+本文档描述 `HJGraphMusicPlayer` 的实际架构和控制语义。
 
-It is written for:
-- LLMs that need stable context before editing player code
-- maintainers who need to recover the design quickly
-- other readers who want to understand the pure-audio player graph
+它面向：
+- 需要在修改播放器代码前建立稳定上下文的 LLM
+- 需要快速恢复设计理解的维护者
+- 想理解纯音频播放器 graph 的其他读者
 
-## One-Sentence Summary
-`HJGraphMusicPlayer` is the pure-audio playback graph in `hjmedia`. It assembles the demux, decode, resample, and render chain, and coordinates graph-level policy such as seek serialization, repeat handling, timeline access, and final EOF delivery.
+## 一句话总结
+`HJGraphMusicPlayer` 是 `hjmedia` 中的纯音频播放 graph。它组装 demux、decode、resample 和 render 链路，并协调 graph 层策略，例如 seek 串行化、repeat 处理、timeline 访问和最终 EOF 投递。
 
-## Scope
-This module is responsible for:
-- opening an audio source
-- controlling playback state such as pause, resume, seek, mute, volume, and track switch
-- exposing playback time through `HJTimeline`
-- coordinating repeat and final EOF behavior across plugins
+## 范围
+本模块负责：
+- 打开音频源
+- 控制 pause、resume、seek、mute、volume 和 track switch 等播放状态
+- 通过 `HJTimeline` 暴露播放时间
+- 在插件之间协调 repeat 和最终 EOF 行为
 
-This module is not responsible for:
-- video rendering
-- complex UI state management
-- a strong reusable `close()` / stop contract
+本模块不负责：
+- 视频渲染
+- 复杂 UI 状态管理
+- 强可复用的 `close()` / stop 契约
 
-## Code Location
-Core implementation:
+## 代码位置
+核心实现：
 - [HJGraphMusicPlayer.h](/f:/Source/hjmedia/src/graphs/HJGraphMusicPlayer.h)
 - [HJGraphMusicPlayer.cpp](/f:/Source/hjmedia/src/graphs/HJGraphMusicPlayer.cpp)
 
-Key dependencies:
+关键依赖：
 - [HJTimeline.md](/f:/Source/hjmedia/src/plugins/doc/HJTimeline.md)
 - [HJPluginDemuxer.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginDemuxer.md)
 - [HJPluginAudioFFDecoder.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioFFDecoder.md)
@@ -36,7 +36,7 @@ Key dependencies:
 - [HJPluginAudioRender.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioRender.md)
 - [HJThread README](/f:/Source/hjmedia/src/utils/HJThread/doc/README.md)
 
-## Component Diagram
+## 组件图
 
 ```mermaid
 flowchart LR
@@ -50,135 +50,135 @@ flowchart LR
     Graph --> Bus["HJEventBus / HJQueryBus"]
 ```
 
-## Initialization Flow
-The high-level initialization sequence is:
+## 初始化流程
+高层初始化顺序如下：
 
-1. initialize graph-level base infrastructure
-2. register event and query handlers
-3. create the graph's own control thread and handler
-4. create render and audio worker threads
-5. create `HJTimeline`
-6. create the demuxer, decoder, resampler, and audio render plugins
-7. connect the plugin chain
-8. initialize plugins and pass required thread / timeline / audio-format state
+1. 初始化 graph 层基础设施
+2. 注册 event 和 query handler
+3. 创建 graph 自己的控制线程和 handler
+4. 创建 render 线程和 audio worker 线程
+5. 创建 `HJTimeline`
+6. 创建 demuxer、decoder、resampler 和 audio render 插件
+7. 连接插件链
+8. 初始化插件，并传入所需的 thread / timeline / audio-format 状态
 
-The graph's own handler exists mainly so that seek requests can be serialized instead of being executed directly on the caller thread.
+graph 自己的 handler 主要用于串行化 seek 请求，避免 seek 直接在调用方线程上执行。
 
-## Core Data Path
-Main path:
+## 核心数据路径
+主路径：
 
 `openURL -> demux -> decode -> resample -> render -> timeline`
 
-Meaning of each step:
-- demuxer reads compressed packets from the media source
-- audio decoder turns packets into decoded audio frames
-- resampler converts or repacks audio into the target output format
-- audio render consumes PCM and drives the actual playback head
-- timeline exposes current playback progress to the graph and callers
+每一步的含义：
+- demuxer 从媒体源读取压缩 packet
+- audio decoder 把 packet 转换为解码后的音频帧
+- resampler 把音频转换或重新打包为目标输出格式
+- audio render 消费 PCM，并驱动实际播放头
+- timeline 向 graph 和调用方暴露当前播放进度
 
-## Core Control Path
-Important control operations:
+## 核心控制路径
+重要控制操作：
 
 - `openURL()`
-  - forwarded to the demuxer
+  - 转发给 demuxer
 - `pause()`
-  - pauses timeline progression and pauses render-side playback
+  - 暂停 timeline 推进，并暂停 render 侧播放
 - `resume()`
-  - resumes render-side playback and restarts timeline progression
+  - 恢复 render 侧播放，并重启 timeline 推进
 - `seek()`
-  - posted to the graph's own handler instead of directly driving the demuxer
+  - 投递到 graph 自己的 handler，而不是直接驱动 demuxer
 - `switchAudioTrack()`
-  - currently uses a lightweight direct demuxer-side switch
+  - 当前使用轻量级的 demuxer 侧直接切换
 - `setRepeats()`
-  - updates graph-level repeat policy used later during EOF handling
+  - 更新 graph 层 repeat 策略，后续 EOF 处理时使用
 
-## Thread Model
-At least three thread roles matter here:
+## 线程模型
+这里至少有三个重要线程角色：
 
 ### Graph control thread
-Owned by the graph itself.
+由 graph 自己持有。
 
-Used for:
-- the graph handler
-- serializing seek requests
-- isolating graph-level control sequencing from arbitrary caller threads
+用于：
+- graph handler
+- 串行化 seek 请求
+- 把 graph 层控制时序从任意调用方线程中隔离出来
 
 ### Audio worker thread
-Used by audio-processing plugins such as decoder and resampler.
+供 decoder 和 resampler 等音频处理插件使用。
 
 ### Render thread
-Used to support render-side asynchronous behavior. Exact details still depend on the concrete platform render implementation.
+用于支持 render 侧异步行为。具体细节仍取决于平台 render 实现。
 
-## Important Threading Constraints
-- `seek()` is asynchronous from the API caller's point of view.
-- fast repeated seek requests are coalesced through handler-side clearing semantics instead of being naively queued forever.
-- playback timestamp meaning depends on render-side progress, not decode-side progress.
-- teardown and delayed task reasoning must be checked together with `HJThread` weak-target semantics.
+## 重要线程约束
+- 从 API 调用方角度看，`seek()` 是异步的。
+- 快速重复 seek 请求会通过 handler 侧清理语义合并，而不是无限排队。
+- 播放时间戳的含义取决于 render 侧进度，而不是 decode 侧进度。
+- teardown 和延迟任务推理必须结合 `HJThread` weak-target 语义一起检查。
 
-## Timeline Semantics
-`getCurrentTimestamp()` is primarily backed by `HJTimeline`.
+## Timeline 语义
+`getCurrentTimestamp()` 主要由 `HJTimeline` 支撑。
 
-For this graph, the important interpretation is:
-- the visible playback head is effectively audio-render-driven
-- the graph does not invent its own independent playback clock
+对这个 graph 来说，关键解释是：
+- 可见播放头实际上由 audio render 驱动
+- graph 不发明自己独立的播放时钟
 
-This is a critical design choice. If render-side pause, buffering, or teardown semantics change, timestamp behavior may also change.
+这是一个关键设计选择。如果 render 侧 pause、buffering 或 teardown 语义发生变化，时间戳行为也可能跟着变化。
 
-## Repeat And EOF Policy
-There are two different EOF concepts in this graph.
+## Repeat 和 EOF 策略
+这个 graph 中有两个不同的 EOF 概念。
 
 ### Demuxer EOF
-Demuxer EOF means the source has no more upstream input to provide.
+Demuxer EOF 表示源已经没有更多上游输入可提供。
 
-At that point, the graph decides whether to:
-- reset for another repeat cycle
-- or mark that final EOF is now pending
+此时 graph 决定：
+- 重置以进入下一轮 repeat
+- 或标记最终 EOF 已经 pending
 
 ### Final playback EOF
-Final playback EOF is reported only after render-side consumption reaches its terminal condition.
+Final playback EOF 只会在 render 侧消费达到终止条件后上报。
 
-This distinction is intentional:
-- demuxer EOF means "no more source data"
-- final playback EOF means "the user has effectively played through the end"
+这个区别是有意设计的：
+- demuxer EOF 表示“没有更多源数据”
+- final playback EOF 表示“用户实际上已经播放到结尾”
 
-This separation should be preserved during later refactors.
+后续重构时应保留这种区分。
 
-## Timestamp Clamping After Final EOF
-After final audio playback completion, the graph stores the last valid playback time and clamps future `getCurrentTimestamp()` results to that maximum.
+## Final EOF 后的时间戳钳制
+最终音频播放完成后，graph 会保存最后一个有效播放时间，并把后续 `getCurrentTimestamp()` 结果钳制到这个最大值。
 
-Why this matters:
-- it prevents playback time from continuing to drift forward after terminal completion
-- it keeps post-EOF UI and state queries stable
+这样做的原因：
+- 防止播放时间在终止完成后继续漂移
+- 让 EOF 后的 UI 和状态查询保持稳定
 
-## Audio Track Switching
-Current track switching is lightweight:
-- validate requested track
-- if already selected, do nothing
-- otherwise ask the demuxer to switch
+## 音轨切换
+当前音轨切换是轻量级的：
+- 校验请求的 track
+- 如果已经选中，则不做任何操作
+- 否则要求 demuxer 切换
 
-The codebase still suggests room for a heavier future design involving seek / flush / resume coordination, so this area should be treated as evolvable rather than fully closed.
+代码库仍然暗示未来可能需要更重的设计，涉及 seek / flush / resume 协调。因此这个区域应被视为可演进，而不是已经完全封闭。
 
-## Lifecycle Notes
+## 生命周期说明
 
 ### `close()`
-Current `close()` behavior is weak and should not be interpreted as a full teardown contract.
+当前 `close()` 行为较弱，不应被理解为完整 teardown 契约。
 
-Practical implication:
-- wrapper layers should not assume `close()` fully releases the playback pipeline
-- stronger stop/reuse semantics require additional design, not just wrapper naming
+实际影响：
+- wrapper 层不应假设 `close()` 会完全释放播放 pipeline
+- 更强的 stop/reuse 语义需要额外设计，而不是只改 wrapper 命名
 
 ### `done()` / internal release
-Actual teardown happens in release-oriented paths that clear plugins, threads, timeline, and graph-owned infrastructure.
+实际 teardown 发生在面向 release 的路径中，这些路径会清理 plugins、threads、timeline 和 graph 持有的基础设施。
 
-## Known Risks
-- `close()` semantics are weak and easy to over-assume.
-- seek is asynchronous and can be misunderstood by wrappers or callers.
-- timeline meaning depends on render behavior.
-- final EOF depends on multiple graph-level state variables and plugin-side progress.
-- track switching likely still has future refinement space.
+## 已知风险
+- `close()` 语义较弱，容易被过度假设。
+- seek 是异步的，wrapper 或调用方容易误解。
+- timeline 含义依赖 render 行为。
+- final EOF 依赖多个 graph 层状态变量和插件侧进度。
+- track switching 未来可能仍有细化空间。
 
-## What LLMs Should Read Next
-Recommended reading order after this document:
+## LLM 下一步应该读什么
+读完本文档后，推荐阅读顺序：
 1. [HJGraphMusicPlayer_AudioContextGuide.md](/f:/Source/hjmedia/docs/architecture/HJGraphMusicPlayer_AudioContextGuide.md)
 2. [HJThread README](/f:/Source/hjmedia/src/utils/HJThread/doc/README.md)
 3. [HJTimeline.md](/f:/Source/hjmedia/src/plugins/doc/HJTimeline.md)
@@ -187,10 +187,10 @@ Recommended reading order after this document:
 6. [HJPluginAudioResampler.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioResampler.md)
 7. [HJPluginAudioRender.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioRender.md)
 
-## Recommended Review Focus
-When reviewing code around this graph, focus on:
-- whether thread ownership of control actions is still correct
-- whether seek semantics remain serialized and asynchronous
-- whether timeline meaning still matches render-side progress
-- whether demux EOF and final playback EOF are still distinct
-- whether teardown leaves delayed tasks or stale callbacks behind
+## 推荐审查重点
+审查这个 graph 周边代码时，重点关注：
+- 控制动作的线程所有权是否仍然正确
+- seek 语义是否仍然保持串行化和异步
+- timeline 含义是否仍然匹配 render 侧进度
+- demux EOF 和最终播放 EOF 是否仍然保持区分
+- teardown 后是否留下延迟任务或陈旧回调

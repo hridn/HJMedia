@@ -1,51 +1,51 @@
-# MusicPlayer Docs
+# MusicPlayer 文档
 
-## Purpose
-This document is the entry point for the `HJGraphMusicPlayer` documentation set.
+## 目的
+本文档是 `HJGraphMusicPlayer` 文档集的入口。
 
-It serves three audiences:
+它面向三类读者：
 
-1. LLMs / coding agents
-Purpose: build stable context before editing graph, plugin, or wrapper code.
+1. LLM / 编码代理  
+目的：在修改 graph、plugin 或 wrapper 代码之前，先建立稳定上下文。
 
-2. Maintainers
-Purpose: quickly recover the architecture, thread model, audio chain, and lifecycle semantics after not touching this module for a while.
+2. 维护者  
+目的：在一段时间没有接触该模块后，快速恢复对架构、线程模型、音频链路和生命周期语义的理解。
 
-3. Other readers
-Purpose: understand what the music player does, what it depends on, and where to read next.
+3. 其他读者  
+目的：理解 music player 做什么、依赖什么，以及下一步应该阅读哪里。
 
-## What This Module Is
-`HJGraphMusicPlayer` is the pure-audio player graph in `hjmedia`.
+## 这个模块是什么
+`HJGraphMusicPlayer` 是 `hjmedia` 中的纯音频播放器 graph。
 
-Its main responsibilities are:
-- assemble the audio playback chain
-- expose playback control APIs
-- maintain playback timeline access
-- coordinate repeat, seek, and final EOF behavior at graph level
+它的主要职责是：
+- 组装音频播放链路
+- 暴露播放控制 API
+- 维护播放 timeline 的访问能力
+- 在 graph 层协调 repeat、seek 和最终 EOF 行为
 
-Core implementation:
+核心实现：
 - [HJGraphMusicPlayer.h](/f:/Source/hjmedia/src/graphs/HJGraphMusicPlayer.h)
 - [HJGraphMusicPlayer.cpp](/f:/Source/hjmedia/src/graphs/HJGraphMusicPlayer.cpp)
 
-Detailed architecture document:
+详细架构文档：
 - [HJGraphMusicPlayer.md](/f:/Source/hjmedia/docs/architecture/HJGraphMusicPlayer.md)
 
-## Core Audio Chain
-The main playback chain is:
+## 核心音频链路
+主播放链路是：
 
 `demuxer -> audio decoder -> audio resampler -> audio render`
 
-Key module docs:
+关键模块文档：
 - [HJPluginDemuxer.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginDemuxer.md)
 - [HJPluginAudioFFDecoder.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioFFDecoder.md)
 - [HJPluginAudioResampler.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioResampler.md)
 - [HJPluginAudioRender.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioRender.md)
 - [HJTimeline.md](/f:/Source/hjmedia/src/plugins/doc/HJTimeline.md)
 
-## Threading Prerequisite
-This player depends heavily on the `HJThread` subsystem.
+## 线程前置知识
+这个播放器高度依赖 `HJThread` 子系统。
 
-Read these before touching seek, teardown, handler posting, delayed tasks, or render/control thread coordination:
+在处理 seek、teardown、handler 投递、延迟任务，或 render/control 线程协作之前，先阅读这些文档：
 - [HJThread README](/f:/Source/hjmedia/src/utils/HJThread/doc/README.md)
 - [HJLooperThread.md](/f:/Source/hjmedia/src/utils/HJThread/doc/HJLooperThread.md)
 - [HJLooper.md](/f:/Source/hjmedia/src/utils/HJThread/doc/HJLooper.md)
@@ -53,8 +53,8 @@ Read these before touching seek, teardown, handler posting, delayed tasks, or re
 - [HJMessageQueue.md](/f:/Source/hjmedia/src/utils/HJThread/doc/HJMessageQueue.md)
 - [HJMessage.md](/f:/Source/hjmedia/src/utils/HJThread/doc/HJMessage.md)
 
-## Recommended Reading Order
-If this is the first time reading the music player, use this order:
+## 推荐阅读顺序
+如果这是第一次阅读 music player，建议按以下顺序：
 
 1. [MusicPlayer Audio Context Guide](/f:/Source/hjmedia/docs/architecture/HJGraphMusicPlayer_AudioContextGuide.md)
 2. [HJGraphMusicPlayer.md](/f:/Source/hjmedia/docs/architecture/HJGraphMusicPlayer.md)
@@ -66,22 +66,22 @@ If this is the first time reading the music player, use this order:
 8. [HJPluginAudioRender.md](/f:/Source/hjmedia/src/plugins/doc/HJPluginAudioRender.md)
 9. [HJGraphMusicPlayer.cpp](/f:/Source/hjmedia/src/graphs/HJGraphMusicPlayer.cpp)
 
-## Wrapper Layers
-Relevant wrapper / bridge code:
+## Wrapper 层
+相关 wrapper / bridge 代码：
 - [HJMusicPlayerJni.cpp](/f:/Source/hjmedia/src/entry/player/asys/HJMusicPlayerJni.cpp)
 - [HJMusicPlayer.h](/f:/Source/hjmedia/src/entry/player/isys/HJMusicPlayer.h)
 - [HJMusicPlayer.mm](/f:/Source/hjmedia/src/entry/player/isys/HJMusicPlayer.mm)
 
-## Good Tasks For Codex
-Good first tasks:
-- summarize thread ownership and control flow
-- trace `openURL -> demux -> decode -> resample -> render`
-- audit seek / repeat / EOF semantics
-- review lifecycle boundaries such as pause/resume/close/done
-- generate regression checklist or design notes
+## 适合 Codex 的任务
+适合优先处理的任务：
+- 总结线程所有权和控制流
+- 追踪 `openURL -> demux -> decode -> resample -> render`
+- 审计 seek / repeat / EOF 语义
+- 复查 pause/resume/close/done 等生命周期边界
+- 生成回归检查清单或设计说明
 
-Avoid jumping straight into:
-- changing final EOF semantics
-- changing timeline ownership
-- changing render callback lifecycle
-- redefining `close()` / stop semantics without first auditing wrappers and graph teardown
+避免一上来就做：
+- 修改最终 EOF 语义
+- 修改 timeline 所有权
+- 修改 render 回调生命周期
+- 在没有先审计 wrappers 和 graph teardown 的情况下，重新定义 `close()` / stop 语义

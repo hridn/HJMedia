@@ -28,7 +28,7 @@ std::string level(int score)
     if (score >= 5) {
         return "needs one more review";
     }
-    return "must补";
+    return "must review";
 }
 
 } // namespace
@@ -49,7 +49,7 @@ int main()
         {"MusicPlayer chain", 9, "prepare source walkthrough"},
         {"thread teardown", 7, "review weak task demo"},
         {"RTMP weak network", 6, "review day19 and day21"},
-        {"codec details", 5, "补 SPS/PPS/AAC frame notes"},
+        {"codec details", 5, "review SPS/PPS/AAC frame notes"},
     };
 
     for (const auto& score : scores) {

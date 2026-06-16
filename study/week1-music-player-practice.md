@@ -41,8 +41,9 @@
 - 用自己的话解释为什么音视频框架里很少直接暴露裸指针
 
 产出：
-- `studyNote/02-cpp-smart-pointer-raii.md`
-- `studyNote/cpp-practice/smart-pointer-demo.cpp`
+- `studyNote/week1-music-player-notes.md`（Day 2 小节已更新）
+- `studyDemo/day02_smart_ptr_demo.cpp`（智能指针 5 个子 Demo）
+- `studyDemo/day02_raii_demo.cpp`（RAII 3 个子 Demo）
 
 验收：
 - 能解释 `shared_ptr`、`weak_ptr`、RAII 在 HJMedia 中解决什么问题
@@ -98,8 +99,8 @@
 - 对照 HJMedia，说明 frame queue 为什么是音视频框架核心组件
 
 产出：
-- `studyNote/05-frame-queue-practice.md`
-- `studyNote/cpp-practice/frame-queue-demo.cpp`
+- `studyNote/week1-music-player-notes.md`（Day 5 小节已更新）
+- `studyDemo/day05_bounded_frame_queue.cpp`
 
 验收：
 - 能回答为什么音视频框架需要队列、反压和异步消费
