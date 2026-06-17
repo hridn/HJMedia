@@ -225,12 +225,12 @@ int HJPlugin::addOutputPlugin(Ptr i_plugin, HJMediaType i_type, int i_trackId)
 			return HJErrAlreadyExist;
 		}
 
-		auto input = std::make_shared<Output>();
-		input->type = i_type;
-		input->trackId = i_trackId;
-		input->plugin = i_plugin;
-		input->myKeyHash = getKeyHash(getName(), i_type, i_trackId);
-		m_outputs[dstKeyHash] = input;
+		auto  output = std::make_shared<Output>();
+		output->type = i_type;
+		output->trackId = i_trackId;
+		output->plugin = i_plugin;
+		output->myKeyHash = getKeyHash(getName(), i_type, i_trackId);
+		m_outputs[dstKeyHash] = output;
 
 		onOutputAdded(dstKeyHash, i_type);
 		return HJ_OK;

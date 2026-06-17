@@ -477,6 +477,42 @@ Graph 构建期:
     -> deliverToOutputs(outFrame)
 ```
 
+### HJMediaFrameDeque和HJPlugin的流程图
+
+```mermaid
+flowchart TB
+    Connect["connectPlugins(src, dst)"]
+    Connect --> AddOut["src.addOutputPlugin(dst)"]
+    Connect --> AddIn["dst.addInputPlugin(src)"]
+
+    AddOut --> OutMap["src.m_outputs[dstKeyHash]"]
+    OutMap --> OutPlugin["plugin -> dst"]
+    OutMap --> OutKey["myKeyHash = srcKeyHash"]
+
+    AddIn --> InMap["dst.m_inputs[srcKeyHash]"]
+    InMap --> InPlugin["plugin -> src"]
+    InMap --> InDeque["mediaFrames"]
+    InDeque --> Deque["HJMediaFrameDeque"]
+    InMap --> InKey["myKeyHash = dstKeyHash"]
+```
+
+```mermaid
+flowchart TB
+    Start["src.deliverToOutputs(frame)"]
+    Start --> Walk["遍历 src.m_outputs"]
+    Walk --> Output["取到 Output"]
+    Output --> Dst["Output.plugin -> dst"]
+    Output --> SrcKey["Output.myKeyHash = srcKeyHash"]
+
+    Dst --> Deliver["dst.deliver(srcKeyHash, frame)"]
+    SrcKey --> Deliver
+    Deliver --> Input["dst.m_inputs[srcKeyHash]"]
+    Input --> Queue["Input.mediaFrames"]
+    Queue --> Push["HJMediaFrameDeque.deliver(frame, &info)"]
+    Push --> Notify["onInputUpdated()"]
+    Notify --> Task["postTask() 调度 dst.runTask"]
+```
+
 ### 今日总结
 
 - 这一天把“队列”从抽象概念落到了 HJMedia 的真实职责：它不只是容器，更是线程解耦、统计维护、反压判断和控制状态承载点。
