@@ -545,50 +545,203 @@ flowchart TB
 
 ### 今日阅读
 
-- [ ] `src/plugins/doc/HJTimeline.md`
-- [ ] `src/plugins/doc/HJPluginDemuxer.md`
-- [ ] `src/plugins/doc/HJPluginAudioFFDecoder.md`
-- [ ] `src/plugins/doc/HJPluginAudioResampler.md`
-- [ ] `src/plugins/doc/HJPluginAudioRender.md`
+- [x] `src/plugins/doc/HJTimeline.md`
+- [x] `src/plugins/doc/HJPluginDemuxer.md`
+- [x] `src/plugins/doc/HJPluginAudioFFDecoder.md`
+- [x] `src/plugins/doc/HJPluginAudioResampler.md`
+- [x] `src/plugins/doc/HJPluginAudioRender.md`
 
 ### 插件职责表
 
 | 插件 | 输入 | 输出 | 职责 | 可能失败点 |
 |---|---|---|---|---|
-| Demuxer |  |  |  |  |
-| Audio Decoder |  |  |  |  |
-| Resampler |  |  |  |  |
-| Audio Render |  |  |  |  |
-| Timeline |  |  |  |  |
+| Demuxer | URL / 本地文件 / 网络源 | 压缩音频 packet、控制帧、EOF | 异步 open/reset/seek，读取容器数据，按媒体类型投递到下游；下游反压时缓存 1 帧等待重试 | open 失败、seek 失败、getFrame 失败、旧 init 任务晚到、EOF 是否允许传播要听 Graph 策略 |
+| Audio Decoder | 压缩音频 packet、flush、EOF | PCM audio frame、decoder EOF | 基于 FFmpeg codec 把压缩音频解码成 PCM；flush 时按 streamInfo 重建 codec；一个输入包可能输出 0/N 帧 | streamInfo 缺失、codec init/run/getFrame 失败、flush 后 codec 未正确重建、EOF 输入和 EOF 输出时机混淆 |
+| Resampler | 解码后的 PCM、flush、EOF | 目标格式 PCM，或 FIFO 打包后的固定粒度 PCM | 把采样率、采样格式、声道布局转换成 render 需要的 `HJAudioInfo`；可选 FIFO 重打包；flush 清空 converter/FIFO 状态 | converter 失败、FIFO addFrame 失败、seek/flush 时残留半包、误以为一帧输入必然一帧输出 |
+| Audio Render | 目标格式 PCM、clear/flush、EOF | 平台音频输出、timeline 更新时间、rendered PCM 事件 | 消费 PCM 写入音频设备；处理 preroll/buffering、pause/resume、mute/volume、EOF stop；完整消费一帧后推进 Timeline | 设备 init/release 失败、callback 线程与 handler 线程竞态、preroll 不足导致静音填充、EOF 需要 Graph 确认、timeline 更新过早或过晚 |
+| Timeline | render 提交的 streamIndex/PTS/speed，pause/play/flush | 当前播放进度、play/pause/update 通知 | 保存播放锚点，用 steady clock 按 speed 外推当前时间；pause 时冻结，play 时恢复；streamIndex 防止旧流回退时间线 | flush 后没有有效锚点、旧 streamIndex 被拒绝、listener 回调重入风险、误把 timeline 当调度器或队列 |
+
+### 音频帧从 demuxer 到 render 的伪代码
+
+```cpp
+// Graph 构建期
+connect(demuxer, decoder);
+connect(decoder, resampler);
+connect(resampler, render);
+
+// Demuxer handler 线程
+packet = demuxer.getFrame();
+if (packet.isEOF()) {
+    if (graph.canPluginEof(demuxer)) {
+        demuxer.deliverToOutputs(packet);
+    }
+} else if (graph.canDeliverToOutputs(demuxer, packet)) {
+    demuxer.deliverToOutputs(packet);
+} else {
+    demuxer.cacheCurrentFrame(packet); // 只缓存 1 帧，等待下次重试
+}
+
+// Decoder handler 线程
+packet = decoder.receive();
+if (packet.isFlush()) {
+    decoder.rebuildCodec(packet.streamInfo);
+} else if (packet.isEOF()) {
+    decoder.drainCodecAndForwardEOF();
+} else {
+    decoder.send(packet);
+    while (auto pcm = decoder.receiveDecodedFrame()) {
+        decoder.deliverToOutputs(pcm);
+    }
+}
+
+// Resampler handler 线程
+pcm = resampler.receive();
+if (pcm.isFlush()) {
+    resampler.resetConverterAndFifo();
+    resampler.forwardFlush();
+} else if (pcm.isEOF()) {
+    resampler.forwardEOF();
+} else {
+    converted = converter.convert(pcm);
+    if (fifoEnabled) {
+        fifo.add(converted);
+        while (auto packed = fifo.getFrame()) {
+            resampler.deliverToOutputs(packed);
+        }
+    } else {
+        resampler.deliverToOutputs(converted);
+    }
+}
+
+// AudioRender 设备回调 / render 线程
+frame = render.receive();
+if (frame.isEOF() && graph.canPluginEof(render)) {
+    render.stopStreamForEof();
+} else {
+    render.copyPcmToDeviceBuffer(frame);
+    if (frame.fullPayloadConsumed()) {
+        timeline.setTimestamp(frame.streamIndex, frame.pts, frame.speed);
+    }
+}
+```
+
+### 控制语义
+
+1. `openURL/reset/seek` 对 Demuxer 来说都是异步效果，真正工作在 handler 线程上串行执行；快速重复操作会通过 message id 合并或丢弃旧任务。
+2. Demuxer 有 generation/stale-init 保护：旧 demuxer 被 quit 后，晚到的旧 init 不能重新创建旧数据源。
+3. 反压不是 `HJMediaFrameDeque` 自己决定的固定容量策略，而是 Graph/Plugin 通过查询下游状态决定是否继续投递；Demuxer 只保存一个当前未投递帧。
+4. flush 不是普通数据帧。Decoder 收到 flush 可能重建 codec，Resampler 收到 flush 要清 converter/FIFO，Render 收到 clear/flush 要刷新 timeline。
+5. EOF 分阶段传播：Demuxer EOF 表示源读完，Decoder EOF 表示 codec drain 完，Render EOF 才接近用户实际听完；是否最终完成由 Graph 查询策略确认。
+6. Timeline 由 Render 推进，不由 Demuxer 或 Decoder 推进。这样 `getCurrentTimestamp()` 更接近实际播放头，而不是文件读取位置。
+
+### Day 6 demo
+
+```text
+demo 文件：studyDemo/day06_audio_plugin_chain.cpp
+编译：cmake -S studyDemo -B studyDemo/output && cmake --build studyDemo/output --target day06_audio_plugin_chain
+运行：studyDemo/output/day06_audio_plugin_chain.exe
+
+demo 验证点：
+1. Demuxer open/seek 会切换 stream generation，旧帧不能回退 timeline。
+2. 下游队列满时，Demuxer 不丢帧，而是缓存 1 帧并等待下次重试。
+3. Decoder 不是一进一出：每个 packet 在 demo 中输出两个 PCM frame。
+4. Resampler 可选 FIFO 打包：两个短 PCM frame 合并成一个 render-friendly frame。
+5. Render 只有在完整消费 PCM 后才推进 timeline。
+6. flush 会清空 decoder/resampler/render 的中间状态，并让 timeline 失效直到新帧到来。
+7. EOF 沿链路传播，但 final playback EOF 在 Render 消费完最后一帧后才成立。
+```
+
+### 今日总结
+
+1. 音频插件链不是简单函数调用链，而是多个 handler/thread 上通过输入队列、控制帧和 Graph 查询协作的 pipeline。
+2. Demuxer 负责“读源和投递 packet”，Decoder 负责“压缩包到 PCM”，Resampler 负责“PCM 格式归一化和重打包”，Render 负责“实际播放和时间线推进”。
+3. 每个插件只应该做本阶段的数据路径职责；是否允许 EOF、是否继续投递、repeat/seek 等策略属于 Graph。
+4. `streamIndex` 是 seek/reset 后防止旧帧污染新播放周期的关键字段，Timeline 和 Demuxer 都依赖它做 generation 防护。
+5. 以后排查 MusicPlayer 卡顿/无声/EOF 不触发时，要按链路分层看：源是否打开、packet 是否出来、codec 是否输出、resampler 是否打包、render 是否真的消费、timeline 是否更新。
+
+### 面试表达
+
+1. demux、decode、resample、render 的区别是什么？
+   答：demux 是从容器里拆出压缩音频包，不改变编码内容；decode 是把 AAC/MP3 等压缩包解成 PCM；resample 是把 PCM 的采样率、采样格式和声道布局转成设备需要的格式；render 是把最终 PCM 写入音频设备，并用实际消费进度推进播放时间线。
+
+2. 为什么播放进度由 AudioRender 更新，而不是由 Demuxer 或 Decoder 更新？
+   答：Demuxer/Decoder 只说明数据被读到或解出来，不代表用户已经听到。AudioRender 更接近硬件播放头，只有它完整消费 PCM 后更新 Timeline，`getCurrentTimestamp()` 才能反映真实播放进度。
+
+3. seek/flush 时每个阶段要注意什么？
+   答：Demuxer 要异步 seek 并清掉当前缓存帧；Decoder 要按新的 streamInfo 重建或 flush codec；Resampler 要清 converter/FIFO 的半包；Render 要清播放侧状态并刷新 timeline。只清队列不清内部状态会导致旧帧穿透到新播放周期。
 
 ## Day 7：本周复盘
 
 ### 10 个面试问答
 
-1. 
-2. 
-3. 
-4. 
-5. 
-6. 
-7. 
-8. 
-9. 
-10. 
+1. HJMedia 是什么？代码按什么层次组织？
+   答：HJMedia 是一个跨平台 C++ 多媒体框架，面向 pusher、player、render/inference 和 MusicPlayer 等产品链路。读代码时可以按 `entry -> graphs -> plugins/core/media/comp -> third_party/externals` 建立层次感：entry 是产品入口，graphs 做业务编排，plugins/core/media/comp 提供运行时、媒体能力和可组合处理单元，第三方库提供底层能力。
+
+2. 为什么项目要用 Graph 和 Plugin，而不是把逻辑都写在一个 Player 类里？
+   答：Graph 负责业务级编排，例如创建链路、连接插件、处理 seek/repeat/EOF/反压策略；Plugin 只负责一个处理阶段，例如 demux、decode、resample、render。这样职责边界清楚，插件可以复用，Graph 也能从全局视角处理控制逻辑。
+
+3. MusicPlayer 的主数据链路是什么？
+   答：`openURL -> demuxer -> audio decoder -> audio resampler -> audio render -> timeline`。Demuxer 从容器或网络源里读压缩 packet，Decoder 解成 PCM，Resampler 统一采样率/格式/声道并可能重打包，AudioRender 写入设备，Timeline 记录用户实际听到的播放进度。
+
+4. MusicPlayer 的数据流和控制流为什么要分开？
+   答：数据流是音频帧沿插件链路单向传递；控制流是 openURL、pause、resume、seek、repeat、close 等操作。控制操作需要 Graph 串行化和全局协调，尤其 seek/flush/EOF 不能让单个插件自行决定，否则容易出现旧帧穿透、EOF 过早或状态不同步。
+
+5. 为什么播放进度应该由 AudioRender 推进，而不是 Demuxer 或 Decoder？
+   答：Demuxer 只说明数据被读到，Decoder 只说明数据被解出来，都不代表用户已经听到。AudioRender 最接近硬件播放头，只有它完整消费 PCM 后推进 Timeline，`getCurrentTimestamp()` 才接近真实播放进度。
+
+6. Demuxer EOF 和 final playback EOF 有什么区别？
+   答：Demuxer EOF 表示源已经没有新的压缩包；final playback EOF 表示下游 decoder/resampler/render 缓冲里的数据也已经被消费完。两者之间通常有时间差，因为队列、解码器、重采样 FIFO、音频设备缓冲都可能还持有数据。
+
+7. 音视频框架为什么需要 frame queue？
+   答：队列用于解耦不同线程和不同处理速度。Demuxer、Decoder、Resampler、Render 不需要在同一个调用栈里同步执行；队列还能承载 preview/receive/flush/drop、缓冲统计和反压判断，是异步媒体链路的核心连接点。
+
+8. HJMedia 为什么大量使用 `shared_ptr`、`weak_ptr` 和 `HJ_DECLARE_PUWTR`？
+   答：Graph、Node、Plugin 之间存在共享所有权和双向引用。`shared_ptr` 表达共享持有，`weak_ptr` 表达观察关系并打破循环引用，`HJ_DECLARE_PUWTR` 为每个类统一生成 `Ptr/Utr/Wtr`，降低指针语义混乱。
+
+9. RAII 在 HJMedia 里解决什么问题？
+   答：RAII 把资源释放绑定到对象生命周期。典型场景包括 `HJOnceToken` 在 `proRun()` 退出时恢复 busy 状态，`HJ_AUTO_LOCK` / `HJ_AUTOU_LOCK` 自动释放锁，以及文件、codec、设备、线程等资源在异常或提前返回时仍能被释放。
+
+10. 如果 MusicPlayer 无声、卡住或 EOF 不触发，应该怎么排查？
+    答：按链路逐段确认：源是否打开、demuxer 是否产出 packet、decoder 是否产出 PCM、resampler 是否输出目标格式、render 是否真正消费、timeline 是否更新、EOF 是否传到每个阶段、seek/flush 后是否有旧帧或半包残留。
 
 ### 3 分钟 MusicPlayer 介绍稿
 
+HJMedia 是一个跨平台 C++ 多媒体框架，产品链路包括推流、播放、渲染/推理和 MusicPlayer。第一周我重点看的是 MusicPlayer，因为它只处理音频，是一条最短但完整的播放链路，适合用来理解这个项目的 Graph、Plugin、队列和生命周期模型。
+
+MusicPlayer 的数据链路可以概括为 `demuxer -> decoder -> resampler -> render -> timeline`。Demuxer 负责从文件或网络源读取容器数据，拆出压缩音频 packet；Decoder 把 AAC/MP3 这类压缩数据解成 PCM；Resampler 把 PCM 转成音频设备需要的采样率、采样格式和声道布局，也可能用 FIFO 把小帧重打包；AudioRender 把最终 PCM 写入音频设备；Timeline 则记录播放进度。
+
+这条链路里最重要的点是：播放进度不应该由 Demuxer 或 Decoder 推进，而应该由 Render 推进。因为读到数据、解出数据都不等于用户已经听到，只有 Render 侧完整消费 PCM 后，时间线才接近真实播放头。
+
+控制链路和数据链路是分开的。音频帧沿插件链路单向流动，但 openURL、pause、resume、seek、repeat、close 由 Graph 协调。Graph 从全局视角决定是否继续投递、是否允许 EOF 传播、seek 时如何 flush 各阶段状态。这个分离可以避免单个插件承担它看不到的业务策略。
+
+EOF 也要分两层理解。Demuxer EOF 只是源数据读完了，但 decoder、resampler、render 和队列里可能还有缓存；final playback EOF 必须等 Render 消费完最后的 PCM 后才成立。所以排查 EOF 问题时不能只看源是否读完，要沿链路检查 EOF 是否被每一段正确处理。
+
+C++ 基础在这条链路里也很具体：`shared_ptr` 管理 Graph/Plugin/Node 的共享生命周期，`weak_ptr` 防止双向引用形成循环，RAII 保证锁、busy 状态和资源句柄能自动清理，frame queue 解耦生产者和消费者并支撑反压。理解这些以后，再读更复杂的 Player 或 Pusher 链路会容易很多。
 
 ### 本周最重要的 5 个收获
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1. 读大型音视频项目要先建立分层地图。先看 entry 和 graph，再往 plugin/core/media/comp 下钻，比直接搜索某个函数更稳定。
+2. MusicPlayer 是理解 HJMedia 的最小完整链路：它覆盖数据流、控制流、队列、异步、EOF、seek/flush 和 timeline。
+3. Graph 和 Plugin 的边界很关键：Graph 管策略和拓扑，Plugin 管单阶段处理，不能把全局策略塞进局部插件。
+4. 播放进度、EOF、flush 都不能只看“数据有没有产生”，必须看“下游有没有真正消费”和“内部状态有没有清干净”。
+5. 智能指针、RAII、锁和队列不是孤立 C++ 知识点，它们直接对应 HJMedia 的生命周期、安全释放、线程同步和反压机制。
 
 ### 下周要补的问题
 
-1. 
-2. 
-3. 
+1. `HJThread`、`HJHandler`、`HJTask`、`HJScheduler`、`HJExecutor` 之间的职责边界和调用关系。
+2. Plugin 的 `init -> start -> process -> stop -> release` 生命周期在多线程 teardown 时如何保证安全。
+3. 真实播放器问题中，如何通过日志证明 seek、flush、EOF 已经到达每个阶段，而不是卡在某个插件或队列里。
+
+### Day 7 demo
+
+```text
+demo 文件：studyDemo/day07_week1_review.cpp
+编译：cmake -S studyDemo -B studyDemo/output && cmake --build studyDemo/output --target day07_week1_review
+运行：studyDemo/output/day07_week1_review.exe
+
+demo 验证点：
+1. 输出 10 个第一周高频面试卡片，每个卡片绑定一个主题和源码/文档路径。
+2. 输出一份 3 分钟 MusicPlayer 介绍稿，可直接照着练习口述。
+3. 输出第一周自检清单，覆盖项目地图、MusicPlayer 链路和 C++ 基础。
+4. 输出带入第 2 周的问题，衔接线程、任务队列、插件生命周期和 teardown。
+```
