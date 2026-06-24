@@ -116,25 +116,42 @@ m_handler->asyncAndClear([wDemuxer, i_timestamp] {
 
 ### 今日阅读
 
-- [ ] `src/plugins/doc/HJPlugin.md`
-- [ ] `src/plugins/doc/HJPluginCodec.md`
-- [ ] `src/plugins/doc/HJMediaFrameDeque.md`
+- [x] `src/plugins/doc/HJPlugin.md`
+- [x] `src/plugins/doc/HJPluginCodec.md`
+- [x] `src/plugins/doc/HJMediaFrameDeque.md`
+- [x] `src/plugins/HJPlugin.h`
+- [x] `src/plugins/HJPlugin.cpp`
+- [x] `src/plugins/HJMediaFrameDeque.cpp`
 
 ### 生命周期图
 
 ```text
-init -> runTask/process -> pause/resume -> flush -> done -> internalRelease
+NONE -> init -> Inited -> runTask/process -> pause/resume -> flush -> EOF/Ready -> done -> internalRelease
 ```
 
 ### 日志点设计
 
 | 函数 | 应打印字段 | 用于定位什么问题 |
 |---|---|---|
-| `deliver()` |  |  |
-| `receive()` |  |  |
-| `flush()` |  |  |
-| `runTask()` |  |  |
-| `deliverToOutputs()` |  |  |
+| `deliver()` | plugin name、srcKeyHash、src plugin、media type、track id、pts/dts、duration、frame type、queue size before/after、status、thread id | 上游是否真的把帧推到了下游；队列是否持续增长 |
+| `receive()` | plugin name、srcKeyHash、pts/dts、frame type、queue size after、status、thread id | `runTask()` 是否在消费输入队列；消费速度是否跟得上 |
+| `flush()` | plugin name、srcKeyHash、queue size before/after、是否 store clear frame、status、thread id | seek/切流后旧帧是否被清掉；flush 是否到达目标插件 |
+| `runTask()` | plugin name、status、paused、input size、delay、thread id、route、ret | handler 是否调度到了插件；是否因为 pause/status/空队列退出 |
+| `deliverToOutputs()` | plugin name、output plugin、media type、track id、pts/dts、frame type、output count、ret | 下游是否收到了帧；某个输出插件是否 deliver 失败 |
+
+### 今日实践
+
+```text
+demo 文件：studyDemo/day10_plugin_lifecycle_logging.cpp
+独立笔记文件：studyNote/10-plugin-lifecycle-log-design.md
+模拟链路：demuxer -> audio-decoder -> audio-render
+观察点：deliver、receive、runTask、deliverToOutputs、pause、flush、EOF
+关键结论：队列归消费者插件管理，控制帧和状态变化要沿同一条插件链路传播，日志字段至少要能串起 plugin、frame、queue、status、thread 这五类信息
+```
+
+### 今日总结
+
+Plugin 的调度不是单次函数调用，而是“投递 -> 入队 -> handler 调度 -> 消费 -> 输出转发 -> 控制帧传播”的完整链路。排查卡住位置时，先看日志是不是断在 `deliver()`、`runTask()`、`receive()`、`deliverToOutputs()` 的某一层，再判断是 handler、状态、队列还是下游插件出了问题。
 
 ## Day 11：LivePlayer / VodPlayer / MusicPlayer 对比
 
