@@ -87,6 +87,33 @@ sequenceDiagram
 - `HJLooper::loop()` 在 `HJLooperThread` 的 OS 线程上取消息并分发。
 - lambda 里先 `weak_ptr.lock()`，插件还活着才调用派生类的 `runTask()`。
 
+### postTask 自循环简图
+
+这张图重点说明：`plugin->postTask(delay)` 不是当前调用栈里的递归，而是把下一次 `runTask` 重新投递回 handler 队列。
+
+```mermaid
+flowchart TD
+    A["deliver / onOutputUpdated / afterInit"] --> B["postTask(delay)"]
+    B --> C["handler->asyncAndClear(runTaskId)"]
+    C --> D["LooperThread 之后执行 lambda"]
+    D --> E{"weak_ptr.lock 成功?"}
+    E -->|否| Z["插件已释放，跳过"]
+    E -->|是| F["plugin->runTask(&delay)"]
+    F --> G{"返回 HJ_OK?"}
+    G -->|是| H["postTask(delay) 再投递下一轮"]
+    H --> C
+    G -->|否| I["停止循环"]
+    I --> J["等待新事件再次触发 postTask"]
+```
+
+读图顺序：
+
+1. 上游 `deliver()`、下游 `onOutputUpdated()` 或初始化完成都会触发 `postTask()`。
+2. `postTask()` 只是把任务放进 handler 队列，真正执行发生在插件绑定的 `HJLooperThread`。
+3. `runTask(&delay)` 成功返回 `HJ_OK`，表示这轮处理推进了一步，可能还可以继续处理，于是重新投递下一轮。
+4. 重新投递会先回到消息队列，因此不是同步 `while` 死循环，也不是函数栈递归。
+5. 如果返回 `HJ_WOULD_BLOCK`、错误、EOF 或插件已释放，就停止自循环，等下一次输入变化或下游腾出空间再唤醒。
+
 ### 四类入口汇入 postTask
 
 ```mermaid

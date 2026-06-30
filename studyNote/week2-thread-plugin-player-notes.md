@@ -157,23 +157,41 @@ Plugin 的调度不是单次函数调用，而是“投递 -> 入队 -> handler 
 
 ### 今日阅读
 
-- [ ] `src/graphs/HJGraphLivePlayer.h`
-- [ ] `src/graphs/HJGraphLivePlayer.cpp`
-- [ ] `src/graphs/HJGraphVodPlayer.h`
-- [ ] `src/graphs/HJGraphVodPlayer.cpp`
-- [ ] `src/graphs/HJGraphMusicPlayer.h`
-- [ ] `src/graphs/HJGraphMusicPlayer.cpp`
+- [x] `src/graphs/HJGraphLivePlayer.h`
+- [x] `src/graphs/HJGraphLivePlayer.cpp`
+- [x] `src/graphs/HJGraphVodPlayer.h`
+- [x] `src/graphs/HJGraphVodPlayer.cpp`
+- [x] `src/graphs/HJGraphMusicPlayer.h`
+- [x] `src/graphs/HJGraphMusicPlayer.cpp`
 
 ### 对比表
 
 | Graph | 场景 | 是否支持 seek | 是否追求低延迟 | 是否需要追帧 | EOF 语义 |
 |---|---|---|---|---|---|
-| MusicPlayer |  |  |  |  |  |
-| LivePlayer |  |  |  |  |  |
-| VodPlayer |  |  |  |  |  |
+| MusicPlayer | 纯音频播放 | 是 | 否 | 否 | demuxer EOF 后按 repeats 决定 reset 或等待最终 audioRender EOF |
+| LivePlayer | 直播音视频流 | 否 | 是 | 是 | demuxer EOF 或 codec/network 错误倾向于 reset demuxer，不轻易结束直播会话 |
+| VodPlayer | 点播音视频 | 是 | 否 | 弱于直播 | demuxer EOF 记录最后流，audio/video render 都结束后上报 Graph EOF |
+
+### 今日实践
+
+```text
+demo 文件：studyDemo/day11_player_graph_compare.cpp
+独立笔记文件：studyNote/11-player-graphs-compare.md
+观察点：三个 Graph 的插件链路、共同 API、差异 API、反压阈值、EOF 策略
+关键结论：LivePlayer 保实时性，VodPlayer 保可 seek 的完整播放，MusicPlayer 保纯音频 repeat/音轨/最终 EOF 状态一致性
+```
+
+### 核心差异
+
+LivePlayer 在 demuxer 后接 `HJPluginAVDropping`，用更激进的音视频缓存阈值控制延迟；VodPlayer 和 MusicPlayer 没有 dropping 插件，主要由 demuxer 输出和下游 decoder/render 队列做反压。
+
+VodPlayer 和 MusicPlayer 都有 `seek()`，并且都通过 handler `asyncAndClear` 投递到 demuxer，避免连续 seek 和 close/release 交错。LivePlayer 没有公开 seek，因为直播流通常没有稳定、可任意定位的时间轴。
+
+MusicPlayer 虽然链路最短，但 repeat 和 EOF 状态最细：demuxer EOF 不直接等于播放结束，还要等 audioRender 消费完最终流后才报告 Graph EOF。
 
 ### 今日总结
 
+直播播放器和点播/音乐播放器的差异来自产品目标。直播优先低延迟，所以允许 dropping、追帧、reset；点播和音乐优先完整性和可控时间线，所以强调 seek、pause、timestamp、repeat 和 render 侧最终 EOF。排查卡顿时，LivePlayer 要从 `demuxer -> dropping -> decoder -> render` 找第一个堆积点；点播和音乐则重点看 seek/flush、timeline、render 缓存和 EOF 状态是否一致。
 
 ## Day 12：视频解码、渲染和丢帧策略
 
