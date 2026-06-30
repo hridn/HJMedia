@@ -98,8 +98,6 @@ third_party/
 build*/
 opens*/
 GEMINI.md
-AGENTS.md
-CLAUDE.md
 !config
 node_modules/
 package.json
