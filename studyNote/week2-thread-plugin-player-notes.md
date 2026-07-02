@@ -227,23 +227,38 @@ drop policy demo 文件：
 ### 问题：seek 后旧帧被播放
 
 ```text
-现象：
-可疑模块：
-源码入口：
-需要打印的日志：
-可能原因：
-修复思路：
-修复风险：
+现象：执行 seek(5000) 后仍播放 1000ms 附近旧帧，或旧 EOF 控制帧提前触发播放结束
+可疑模块：demuxer、decoder、resampler、render、timeline、queue、EOF 状态、旧 delayed seek task
+源码入口：HJMediaPlayer::seek、HJNodeDemuxer::seek、HJMediaNode::flush、HJNodeVRender/HJNodeARender::flush、HJGraphMusicPlayer::seek
+需要打印的日志：seek id、target pts、handler msg id、plugin name、queue size before/after、EOF before/after、frame pts、generation、timeline base、stream index
+可能原因：render 未 preFlush、下游队列未清空、codec/fifo 内部缓存未 flush、旧 EOF 未重置、timeline 未重置、连续 seek 旧任务晚到
+修复思路：seek 前 preFlush render；demuxer seek 成功后向下游 flush；重置 EOF/timeline；用 seek id 或 generation 过滤旧帧/旧 EOF；连续 seek 使用 latest-only
+修复风险：误清新帧、render 卡在 preFlush、合法 EOF 不上报、generation 更新点不一致、UI 进度跳变
 ```
 
 ### seek 风险清单
 
-- [ ] demuxer 是否 seek 到新位置
-- [ ] decoder 是否 flush
-- [ ] resampler 是否清空内部缓存
-- [ ] render 是否停止旧帧播放
-- [ ] timeline 是否重置
-- [ ] 旧异步任务是否仍然在执行
+- [x] demuxer 是否 seek 到新位置
+- [x] decoder 是否 flush
+- [x] resampler 是否清空内部缓存
+- [x] render 是否停止旧帧播放
+- [x] timeline 是否重置
+- [x] 旧异步任务是否仍然在执行
+
+### 今日实践
+
+```text
+demo 文件：studyDemo/day13_seek_flush_eof_debug.cpp
+独立笔记文件：studyNote/13-seek-flush-eof-debug.md
+模拟问题：seek 后 render 队列里仍有旧普通帧和旧 EOF 控制帧
+broken 场景：不 preFlush、不 flush、不重置 EOF/timeline、不做 generation gate，会先播放旧帧，再被旧 EOF 截断
+fixed 场景：preFlush + 全链路 flush + EOF reset + timeline reset + generation gate，只接受新 seek generation 的帧
+关键结论：seek 不是单点调用，而是 demuxer 定位、下游清队列、render 暂停消费、timeline 重置、EOF 语义切换的组合动作
+```
+
+### 今日总结
+
+seek 后旧帧被播放通常不是“demuxer 没 seek”这么简单。更常见的泄漏点在消费者侧队列、decoder/resampler 内部缓存、render seek 期间继续消费旧帧，以及旧 EOF 控制帧没有被隔离。排查时要按 `seek request -> demuxer first output -> decoder/resampler flush -> render receive/render -> EOF report` 的顺序串日志，并用 seek id、stream index 或 generation 把新旧播放轮次区分开。
 
 ## Day 14：本周复盘
 
