@@ -262,31 +262,63 @@ seek 后旧帧被播放通常不是“demuxer 没 seek”这么简单。更常�
 
 ## Day 14：本周复盘
 
+详细复盘笔记：`studyNote/week2-review.md`
+
 ### 15 个面试问答
 
-1. 
-2. 
-3. 
-4. 
-5. 
-6. 
-7. 
-8. 
-9. 
-10. 
-11. 
-12. 
-13. 
-14. 
-15. 
+1. **HJLooperThread、HJLooper、HJHandler、HJMessageQueue 的关系是什么？**
+   `HJLooperThread` 启动一条 `std::thread`；这条线程调用 `HJLooper::prepare()` 创建 `thread_local` 的 `HJLooper`；`HJLooper` 持有 `HJMessageQueue`，在 `loop()` 中不断取消息分发；`HJHandler` 是外部投递入口，把 lambda 包装成 `HJMessage` 放入队列。
+
+2. **Plugin 的 postTask() 为什么用 asyncAndClear 而不是 async？**
+   避免消息队列堆积大量冗余的 `runTask` 调度请求。`asyncAndClear` 先清同 id 旧消息再投递，保证同一 plugin 的待执行调度请求最多保留一个。
+
+3. **消息去重后 runTask() 怎么保证帧不丢失？**
+   消息队列存的是"该干活了"的信号，帧在 plugin 自己的输入队列里。一次 `runTask` 会循环 `receive()` 消费所有可用帧；没处理完则返回 `HJ_OK`，自调度下一轮。
+
+4. **Plugin 为什么把 deliver() 和 runTask() 拆到不同线程？**
+   上游 deliver 只做入队不阻塞；下游 runTask 在 looper 线程串行处理无需加锁；同时支持延迟、去重、weak_ptr 生命周期保护。
+
+5. **为什么 seek 不能直接在调用线程执行？**
+   seek 修改跨模块状态，若与 looper 线程上的 `runTask()`/`flush()`/`close()` 并发会破坏顺序。投递到 looper 线程后与其他操作串行。
+
+6. **连续 seek 如何保证只执行最后一次？**
+   `asyncAndClear(messageId)`：每次 seek 前清掉旧 seek 请求，最终只执行最后一次。
+
+7. **close / done / internalRelease 有什么区别？**
+   close 是业务停止入口；done 是生命周期终结入口（设 HJSTATUS_Done）；internalRelease 是子类释放资源实现，外部不应直接调。
+
+8. **旧 delayed task 越过对象生命周期怎么办？**
+   Handler 自身的 weak target 跳过失效消息；lambda 内捕获 `Wtr`，执行时 `lock()` 检查。
+
+9. **直播和点播播放器的核心差异？**
+   直播保实时性（dropping + 追帧，无 seek）；点播保完整性（反压+seek+准确 EOF）。
+
+10. **如何定位插件链路卡住位置？**
+    沿 deliver/runTask/receive/deliverToOutputs 打 queue size + status + thread ID。queue 持续增长但下游不消费处即是卡点。
+
+11. **render preFlush 的用途和风险？**
+    用途：flush 到达前阻止 render 消费旧帧。风险：flush 丢失时 render 卡在 preFlush 导致播放卡死。
+
+12. **什么时候 weak_ptr 捕获是必要的？**
+    所有跨线程异步任务：postTask scheduler runTask、seek 回调、onOutputUpdated 通知上游。
+
+13. **generation 过滤解决什么问题？**
+    防止旧 seek 轮次的残留帧和旧 EOF 误伤新轮次。每次 seek 递增 generation，render 只接受当前 generation 的帧。
+
+14. **LivePlayer 有 dropping 而 VodPlayer 没有的原因？**
+    直播需要丢过期帧追实时性；点播追求完整播放，适合反压等待。MusicPlayer 也没有 dropping，纯音频丢帧可感知。
+
+15. **一帧从交付到渲染的完整调用链路？**
+    deliver → 输入队列入队 → postTask() → asyncAndClear → MessageQueue 排队 → Looper loop 取出 → dispatchMessage → runTask → receive 消费 → 处理 → deliverToOutputs 转发 → 通知上游 onOutputUpdated。
 
 ### 5 分钟异步调度模型介绍稿
 
+见 `studyNote/week2-review.md` → "5 分钟异步调度模型介绍稿"。
 
 ### 本周最重要的 5 个收获
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1. **线程是底座，消息是核心** — 状态串行化到 looper 线程比加锁更重要。
+2. **postTask 不是 runTask** — deliver 和 runTask 解耦到不同线程，支撑反压/延迟/去重/生命周期保护。
+3. **asyncAndClear 自调度不丢帧** — 一次 runTask 循环消费所有帧，HJ_OK 继续自调度下一轮。
+4. **seek 是组合操作** — preFlush + demuxer 定位 + 全链路 flush + EOF reset + timeline reset + generation gate，缺一不可。
+5. **产品目标决定技术策略** — 直播保实时（dropping），点播保完整（反压）。
