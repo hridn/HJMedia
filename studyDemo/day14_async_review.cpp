@@ -1,642 +1,524 @@
 /*
- * Day 14: Week 2 async model review — walk through the concept tree.
+ * Day 14: week 2 async model review.
  *
  * Study plan: study/week2-thread-plugin-player-practice.md
  * Study note: studyNote/week2-review.md
- *             studyNote/week2-thread-plugin-player-notes.md
  *
  * HJMedia reference source:
- * - src/utils/HJThread/doc/README.md          (thread model)
- * - src/plugins/doc/HJPlugin.md                (plugin lifecycle)
- * - src/graphs/HJGraphMusicPlayer.cpp          (seek + teardown)
- * - src/plugins/HJPluginAVDropping.cpp         (drop policy)
- * - src/core/HJMediaPlayer.cc                  (seek entry)
- * - src/core/HJMediaNode.cc                    (flush propagation)
- *
- * This demo revisits the 5 most important concepts from week 2:
- *   Section 1 — deliver / runTask decoupling (Day 10)
- *   Section 2 — asyncAndClear with self-drive (Day 10)
- *   Section 3 — weak_ptr + teardown (Day 9)
- *   Section 4 — seek flush propagation (Day 13)
- *   Section 5 — player comparison (Day 11-12)
- *
- * Each section runs a minimal scenario, observes behaviour, and writes
- * log entries you'd see in a real HJMedia trace.
+ * - src/utils/HJThread/doc/README.md
+ * - src/plugins/doc/HJPlugin.md
+ * - src/plugins/doc/HJMediaFrameDeque.md
+ * - src/graphs/HJGraphLivePlayer.cpp
+ * - src/graphs/HJGraphVodPlayer.cpp
+ * - src/graphs/HJGraphMusicPlayer.cpp
+ * - src/core/HJMediaPlayer.cc
+ * - src/core/HJMediaNode.cc
  */
 
 #include "study_demo_common.h"
 
-#include <cassert>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
-#include <iomanip>
-#include <map>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace std::chrono_literals;
 
+namespace {
+
+// 把当前线程 id 转成字符串，方便日志里直观看到
+// deliver 和 runTask 是否真的跑在不同线程上。
+std::string currentThreadId()
+{
+    std::ostringstream oss;
+    oss << std::this_thread::get_id();
+    return oss.str();
+}
+
+// 构造一个简化版音频帧，用于模拟 HJMedia 里带 pts/generation 的媒体数据。
+hjstudy::Frame audioFrame(int64_t ptsMs, int generation, std::string payload)
+{
+    return hjstudy::Frame{ptsMs, hjstudy::MediaType::Audio, false, generation, std::move(payload)};
+}
+
+// 用 control 帧 + payload=eof 模拟链路里的 EOF 控制帧。
+hjstudy::Frame eofFrame(int generation)
+{
+    return hjstudy::Frame{-1, hjstudy::MediaType::Control, false, generation, "eof"};
+}
+
 // ---------------------------------------------------------------------------
-// Section 1 — deliver / runTask decoupling
-//
-// 验证核心理解：deliver() 只做入队不处理，runTask() 在另一线程上消费。
-// 两者之间的桥梁就是 postTask / asyncAndClear。
+// Section 1: deliver / runTask decoupling.
 // ---------------------------------------------------------------------------
 
-namespace section1 {
-
-using Clock = std::chrono::steady_clock;
-
-// 模拟一个简化版的 plugin + looper thread 交互。
-// - 外部调用 deliver() 向输入队列入队
-// - 每次 deliver 触发 postTask()
-// - looper 线程消费 runTask() 时通过 receive() 取帧
-
-struct Frame {
-    int64_t ptsMs;
-    std::string payload;
-};
-
-class SimplePlugin : public std::enable_shared_from_this<SimplePlugin> {
+class ReviewPlugin : public std::enable_shared_from_this<ReviewPlugin> {
 public:
-    using Ptr = std::shared_ptr<SimplePlugin>;
-    using Wtr = std::weak_ptr<SimplePlugin>;
-
-    explicit SimplePlugin(std::string name)
+    explicit ReviewPlugin(std::string name)
         : name_(std::move(name))
+        , worker_(std::make_unique<hjstudy::TaskRunner>())
     {
     }
 
-    // 模拟 HJPlugin::deliver — 入队 + 触发调度
-    void deliver(Frame frame)
+    ~ReviewPlugin()
     {
-        queue_.push_back(frame);
+        worker_->stop();
+    }
+
+    void deliver(hjstudy::Frame frame)
+    {
+        std::size_t queueSize = 0;
+        {
+            // 模拟上游线程只做“入队”动作，不在这里直接处理帧。
+            std::lock_guard<std::mutex> lock(mutex_);
+            input_.push_back(std::move(frame));
+            queueSize = input_.size();
+        }
+
         hjstudy::logFields(
             name_,
             "deliver",
+            {{"queueSize", std::to_string(queueSize)}, {"threadId", currentThreadId()}});
+
+        postTask();
+    }
+
+private:
+    void postTask()
+    {
+        // scheduled_ 模拟 latest-only 的 runTask 调度信号：
+        // 队列里已经有一个待执行 runTask 时，不再重复投递。
+        if (scheduled_.exchange(true)) {
+            hjstudy::logLine(name_, "postTask coalesced: runTask is already scheduled");
+            return;
+        }
+
+        std::weak_ptr<ReviewPlugin> weakSelf = shared_from_this();
+        worker_->post([weakSelf] {
+            if (auto self = weakSelf.lock()) {
+                self->runTask();
+            }
+        });
+    }
+
+    void runTask()
+    {
+        int consumed = 0;
+        while (true) {
+            hjstudy::Frame frame;
+            std::size_t queueLeft = 0;
             {
-                {"ptsMs", std::to_string(frame.ptsMs)},
-                {"queueSize", std::to_string(queue_.size())},
-                {"threadId", section1ThreadId()},
-            });
-        postTask(0);
-    }
-
-    void postTask(int64_t delayMs)
-    {
-        if (!worker_) {
-            worker_ = std::make_unique<SimWorker>();
-        }
-        Wtr w = shared_from_this();
-        worker_->postDelayed(
-            [w] {
-                auto self = w.lock();
-                if (!self)
-                    return;
-                int64_t delay = 0;
-                if (self->runTask(&delay) == 0) {
-                    self->postTask(delay);
+                // runTask 在 worker 线程里串行取帧并处理。
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (input_.empty()) {
+                    break;
                 }
-            },
-            delayMs);
-    }
+                frame = std::move(input_.front());
+                input_.pop_front();
+                queueLeft = input_.size();
+            }
 
-    // runTask 返回 0 表示"还能继续处理"，非 0 表示"先停"
-    int runTask(int64_t* delayOut)
-    {
-        if (queue_.empty()) {
-            hjstudy::logFields(name_, "runTask", {{"action", "empty-stop"}, {"threadId", section1ThreadId()}});
-            *delayOut = 0;
-            return -1; // WOULD_BLOCK
-        }
-
-        while (!queue_.empty()) {
-            auto f = queue_.front();
-            queue_.pop_front();
+            ++consumed;
             hjstudy::logFields(
                 name_,
                 "receive",
-                {
-                    {"ptsMs", std::to_string(f.ptsMs)},
-                    {"queueSizeAfter", std::to_string(queue_.size())},
-                    {"threadId", section1ThreadId()},
-                });
+                {{"ptsMs", std::to_string(frame.ptsMs)},
+                 {"queueLeft", std::to_string(queueLeft)},
+                 {"threadId", currentThreadId()}});
         }
 
-        // 还有数据可以继续处理
-        *delayOut = 0;
-        return 0; // HJ_OK
+        scheduled_ = false;
+
+        bool hasMore = false;
+        {
+            // 如果 runTask 结束后发现期间又来了新帧，再补投递一次。
+            std::lock_guard<std::mutex> lock(mutex_);
+            hasMore = !input_.empty();
+        }
+        if (hasMore) {
+            postTask();
+        }
+
+        hjstudy::logFields(name_, "runTask done", {{"consumed", std::to_string(consumed)}});
     }
-
-    bool isDone() const { return false; }
-
-private:
-    static std::string section1ThreadId()
-    {
-        std::ostringstream oss;
-        oss << std::this_thread::get_id();
-        return oss.str();
-    }
-
-    struct SimWorker {
-        SimWorker()
-            : worker([this] { loop(); })
-        {
-        }
-        ~SimWorker()
-        {
-            {
-                std::lock_guard<std::mutex> lk(mtx);
-                stopping = true;
-                while (!tasks.empty())
-                    tasks.pop();
-            }
-            cv.notify_one();
-            worker.join();
-        }
-
-        void postDelayed(std::function<void()> task, int64_t delayMs)
-        {
-            std::lock_guard<std::mutex> lk(mtx);
-            if (stopping)
-                return;
-            tasks.push(ScheduledTask{Clock::now() + std::chrono::milliseconds(delayMs), seq_++, std::move(task)});
-            cv.notify_one();
-        }
-
-    private:
-        struct ScheduledTask {
-            Clock::time_point due;
-            uint64_t seq;
-            std::function<void()> task;
-            bool operator>(const ScheduledTask& o) const
-            {
-                if (due == o.due)
-                    return seq > o.seq;
-                return due > o.due;
-            }
-        };
-        void loop()
-        {
-            std::unique_lock<std::mutex> lk(mtx);
-            while (true) {
-                if (stopping && tasks.empty())
-                    return;
-                if (tasks.empty()) {
-                    cv.wait(lk);
-                    continue;
-                }
-                auto top = tasks.top();
-                if (Clock::now() < top.due) {
-                    cv.wait_until(lk, top.due);
-                    continue;
-                }
-                tasks.pop();
-                lk.unlock();
-                top.task();
-                lk.lock();
-            }
-        }
-        std::mutex mtx;
-        std::condition_variable cv;
-        std::priority_queue<ScheduledTask, std::vector<ScheduledTask>, std::greater<ScheduledTask>> tasks;
-        std::thread worker;
-        bool stopping{false};
-        uint64_t seq_{0};
-    };
 
     std::string name_;
-    std::deque<Frame> queue_;
-    std::unique_ptr<SimWorker> worker_;
+    std::mutex mutex_;
+    std::deque<hjstudy::Frame> input_;
+    std::unique_ptr<hjstudy::TaskRunner> worker_;
+    std::atomic<bool> scheduled_{false};
 };
 
-void run()
+void runDeliverRunTaskReview()
 {
     hjstudy::printTitle("Section 1: deliver / runTask decoupling");
-    hjstudy::logLine("point", "deliver() 和 runTask() 在不同线程上执行，通过 postTask 连接");
+    hjstudy::logLine("point", "deliver only enqueues frames; runTask consumes them on the worker thread");
 
-    auto plugin = std::make_shared<SimplePlugin>("decoder");
-    plugin->deliver(Frame{1000, "frame-A"});
-    plugin->deliver(Frame{1033, "frame-B"});
-    plugin->deliver(Frame{1066, "frame-C"});
+    // 连续 deliver 三帧，观察日志中：
+    // 1. deliver 在线程 A
+    // 2. receive 在线程 B
+    // 3. runTask 调度只保留一份
+    auto decoder = std::make_shared<ReviewPlugin>("decoder");
+    decoder->deliver(audioFrame(1000, 0, "frame-A"));
+    decoder->deliver(audioFrame(1020, 0, "frame-B"));
+    decoder->deliver(audioFrame(1040, 0, "frame-C"));
 
-    std::this_thread::sleep_for(60ms);
-    hjstudy::logLine("section1", "所有帧在一个 runTask() 中被消费完毕");
+    std::this_thread::sleep_for(80ms);
 }
 
-} // namespace section1
-
 // ---------------------------------------------------------------------------
-// Section 2 — asyncAndClear self-drive
-//
-// 验证核心理解：
-// 1. 消息去重不丢帧（帧在输入队列不在消息队列）
-// 2. runTask 返回 HJ_OK 会自调度下一轮（不依赖上游重新触发）
+// Section 2: latest-only scheduling.
 // ---------------------------------------------------------------------------
 
-namespace section2 {
-
-class SelfDrivingPlugin : public std::enable_shared_from_this<SelfDrivingPlugin> {
+class LatestOnlyHandler {
 public:
-    using Ptr = std::shared_ptr<SelfDrivingPlugin>;
-    using Wtr = std::weak_ptr<SelfDrivingPlugin>;
-
-    explicit SelfDrivingPlugin(std::string name)
-        : name_(std::move(name))
+    void asyncAndClear(int id, std::string label, std::function<void()> task)
     {
-        worker_ = std::make_unique<hjstudy::TaskRunner>();
+        const auto before = tasks_.size();
+        // 模拟 HJLooperThread::Handler::asyncAndClear：
+        // 先删旧消息，再塞入新的同类请求。
+        tasks_.erase(
+            std::remove_if(tasks_.begin(), tasks_.end(), [id](const Task& item) {
+                return item.id == id;
+            }),
+            tasks_.end());
+
+        hjstudy::logFields(
+            "handler",
+            "asyncAndClear",
+            {{"cleared", std::to_string(before - tasks_.size())}, {"id", std::to_string(id)}, {"label", label}});
+
+        tasks_.push_back(Task{id, std::move(label), std::move(task)});
     }
 
-    ~SelfDrivingPlugin() { worker_->stop(); }
-
-    void deliver(std::string payload)
+    void runAll()
     {
-        queue_.push_back(std::move(payload));
-        hjstudy::logFields(name_, "deliver", {{"queueSize", std::to_string(queue_.size())}});
-
-        // asyncAndClear 模拟：每次 postTask 前清理旧的 runTask 调度请求
-        // 这里用 removeSameId 模拟 asyncAndClear
-        Wtr w = shared_from_this();
-        worker_->postLatest(
-            [w, step = step_++] {
-                auto self = w.lock();
-                if (!self)
-                    return;
-                // 一次 runTask 消费所有可用帧
-                self->runTaskOnce();
-            },
-            kRunTaskId, 0);
-    }
-
-    void runTaskOnce()
-    {
-        int consumed = 0;
-        while (!queue_.empty()) {
-            auto p = queue_.front();
-            queue_.pop_front();
-            hjstudy::logFields(name_, "receive", {{"payload", p}, {"queueSize", std::to_string(queue_.size())}});
-            ++consumed;
-        }
-        hjstudy::logFields(name_, "runTask-done", {{"consumed", std::to_string(consumed)}});
-
-        // 如果还有数据能处理，自调度下一轮
-        // 模拟 runTask 返回 HJ_OK → postTask(delay)
-        if (!queue_.empty()) {
-            Wtr w = shared_from_this();
-            worker_->postLatest([w] {
-                if (auto self = w.lock())
-                    self->runTaskOnce();
-            }, kRunTaskId, 0);
+        // 顺序执行队列中保留下来的请求。
+        while (!tasks_.empty()) {
+            auto task = std::move(tasks_.front());
+            tasks_.erase(tasks_.begin());
+            hjstudy::logFields("handler", "dispatch", {{"id", std::to_string(task.id)}, {"label", task.label}});
+            task.callback();
         }
     }
-
-    void pushMoreLater()
-    {
-        // 模拟上游延迟投递
-        Wtr w = shared_from_this();
-        worker_->postDelayed([w] {
-            auto self = w.lock();
-            if (!self)
-                return;
-            self->deliver("late-frame-X");
-            self->deliver("late-frame-Y");
-        }, 30ms);
-    }
-
-    int step() const { return step_; }
 
 private:
-    static constexpr int kRunTaskId = 100;
-    std::string name_;
-    std::deque<std::string> queue_;
-    std::unique_ptr<hjstudy::TaskRunner> worker_;
-    int step_{0};
+    struct Task {
+        int id{};
+        std::string label;
+        std::function<void()> callback;
+    };
+
+    std::vector<Task> tasks_;
 };
 
-void run()
+void runLatestOnlyReview()
 {
-    hjstudy::printTitle("Section 2: asyncAndClear + self-drive");
-    hjstudy::logLine("point", "消息去重只去重调度信号；runTask 返回 HJ_OK 自调度下一轮");
+    hjstudy::printTitle("Section 2: latest-only seek");
 
-    auto plugin = std::make_shared<SelfDrivingPlugin>("av-dropping");
-    plugin->deliver("frame-1");
-    plugin->deliver("frame-2");
-    plugin->deliver("frame-3");
+    constexpr int seekMessageId = 42;
+    LatestOnlyHandler handler;
 
-    // 三帧已经入队，但消息队列里只会有一次 runTask 调度
-    hjstudy::logLine("section2", "3 帧入队但 only 1 runTask 调度消息（asyncAndClear 去重）");
-    hjstudy::logLine("section2", "runTask 执行时循环 receive 将 3 帧全部消费");
+    // 连续 3 次 seek，只希望最后一次生效。
+    for (const int64_t target : {1000, 2000, 5000}) {
+        handler.asyncAndClear(seekMessageId, "seek(" + std::to_string(target) + ")", [target] {
+            hjstudy::logFields("demuxer", "seek", {{"targetPtsMs", std::to_string(target)}});
+        });
+    }
 
-    std::this_thread::sleep_for(40ms);
-
-    // 模拟上游延迟投递新帧 — 自调度已停止（队列空），新帧触发新一轮
-    hjstudy::logLine("section2", "上游延迟投递新帧，再次触发 postTask");
-    plugin->pushMoreLater();
-    std::this_thread::sleep_for(60ms);
+    hjstudy::logLine("point", "three requests were posted, but only the last seek should execute");
+    handler.runAll();
 }
 
-} // namespace section2
-
 // ---------------------------------------------------------------------------
-// Section 3 — weak_ptr teardown
-//
-// 验证核心理解：旧 delayed task 使用 weak_ptr 跳过已释放对象。
+// Section 3: weak_ptr teardown.
 // ---------------------------------------------------------------------------
 
-namespace section3 {
-
-struct RiskSession : public std::enable_shared_from_this<RiskSession> {
-    using Ptr = std::shared_ptr<RiskSession>;
-    using Wtr = std::weak_ptr<RiskSession>;
-
-    explicit RiskSession(std::string n)
-        : name(std::move(n))
+class PlayerSession : public std::enable_shared_from_this<PlayerSession> {
+public:
+    explicit PlayerSession(std::string name)
+        : name_(std::move(name))
     {
-        hjstudy::logLine(name, "created");
+        hjstudy::logLine(name_, "created");
     }
 
-    ~RiskSession()
+    ~PlayerSession()
     {
-        hjstudy::logLine(name, "destroyed");
+        hjstudy::logLine(name_, "destroyed");
     }
 
-    void doSeek(int64_t ts)
+    void seek(int64_t targetPtsMs)
     {
-        if (closed) {
-            hjstudy::logFields(name, "WARN: old task on closed session", {{"ts", std::to_string(ts)}});
-            return;
-        }
-        hjstudy::logFields(name, "seek", {{"ts", std::to_string(ts)}});
+        hjstudy::logFields(name_, "seek", {{"targetPtsMs", std::to_string(targetPtsMs)}});
     }
 
-    Wtr weak() { return shared_from_this(); }
-
-    std::string name;
-    bool closed{false};
+private:
+    std::string name_;
 };
 
-void run()
+void runWeakPtrReview()
 {
-    hjstudy::printTitle("Section 3: weak_ptr + teardown");
-    hjstudy::logLine("point", "异步任务捕获 Wtr（weak_ptr），对象释放后自动跳过");
+    hjstudy::printTitle("Section 3: weak_ptr teardown");
 
     hjstudy::TaskRunner handler;
-
-    // 安全场景
     {
-        auto sess = std::make_shared<RiskSession>("safe-player");
-        Wtr w = sess->weak();
-        handler.postDelayed(20ms, [w] {
-            if (auto locked = w.lock()) {
-                locked->doSeek(5000);
+        auto session = std::make_shared<PlayerSession>("music-player");
+        std::weak_ptr<PlayerSession> weakSession = session;
+
+        // 延迟任务里只持有 weak_ptr。
+        // 如果对象先析构，旧任务到期后会自动跳过。
+        handler.postDelayed(30ms, [weakSession] {
+            if (auto locked = weakSession.lock()) {
+                locked->seek(5000);
             } else {
-                hjstudy::logLine("handler", "safe-player already gone, skipping old seek [CORRECT]");
+                hjstudy::logLine("handler", "old delayed seek skipped because session is gone");
             }
         });
-        sess->closed = true;
-        sess.reset();
+
+        session.reset();
     }
 
-    std::this_thread::sleep_for(40ms);
-
-    // 不安全场景 — 演示 weak_ptr 保护的价值
-    hjstudy::logLine("section3", "如果捕获裸指针，旧 seek 会访问已释放内存或已 close 对象");
-    hjstudy::logLine("section3", "HJMedia 的 postTask() 内部用 Wtr + lock() 防止此类问题");
+    std::this_thread::sleep_for(70ms);
     handler.stop();
 }
 
-} // namespace section3
-
 // ---------------------------------------------------------------------------
-// Section 4 — seek flush propagation
-//
-// 验证核心理解：seek 需要 preFlush + flush 全链路 + EOF reset + generation gate。
-// 检查点：old frame after seek = 0 才算正确。
+// Section 4: seek protections.
 // ---------------------------------------------------------------------------
-
-namespace section4 {
 
 struct Stage {
     std::string name;
+    // queue 模拟各处理节点持有的输入缓存/待处理帧。
     std::deque<hjstudy::Frame> queue;
     bool eof{false};
+    // preFlush 只对 render 有意义：seek 期间先暂停旧帧消费。
     bool preFlush{false};
 };
 
-struct SeekOptions {
-    bool enablePreFlush;
-    bool enableFlush;
-    bool enableEofReset;
-    bool enableGenerationGate;
+struct SeekProtection {
+    // 这几个开关分别代表 seek 修复方案里的不同保护措施。
+    bool preFlushRender{};
+    bool flushQueues{};
+    bool resetEof{};
+    bool generationGate{};
 };
 
-void runOneCase(const std::string& label, SeekOptions opts, bool expectOldFrames)
+void flushStage(Stage& stage)
 {
-    hjstudy::logLine("", "");
+    const auto before = stage.queue.size();
+    // 模拟 flush：清队列、清 EOF。
+    stage.queue.clear();
+    stage.eof = false;
+    hjstudy::logFields(
+        stage.name,
+        "flush",
+        {{"queueBefore", std::to_string(before)}, {"queueAfter", "0"}, {"eof", "false"}});
+}
+
+void moveAll(Stage& from, Stage& to)
+{
+    // 简化版链路传递：把上一阶段的所有帧转交给下一阶段。
+    while (!from.queue.empty()) {
+        to.queue.push_back(std::move(from.queue.front()));
+        from.queue.pop_front();
+    }
+}
+
+void runSeekCase(const std::string& label, SeekProtection protection)
+{
     hjstudy::printTitle(label);
 
+    constexpr int64_t targetPtsMs = 5000;
     int generation = 0;
-    int renderedOld = 0;
-    int droppedStale = 0;
-    int64_t targetPts = 5000;
+    int renderedOldFrames = 0;
+    int renderedNewFrames = 0;
+    int droppedStaleFrames = 0;
 
     Stage demuxer{"demuxer"};
     Stage decoder{"decoder"};
     Stage render{"render"};
 
-    // before seek state
+    // 先造一个 seek 前的“脏现场”：
+    // demuxer 已经 EOF，下游还残留旧帧和旧 EOF。
     demuxer.eof = true;
-    decoder.queue.push_back(hjstudy::Frame{960, hjstudy::MediaType::Audio, false, 0, "old-cache"});
-    render.queue.push_back(hjstudy::Frame{1000, hjstudy::MediaType::Audio, false, 0, "old-render"});
-    render.queue.push_back(hjstudy::Frame{-1, hjstudy::MediaType::Control, false, 0, "eof"});
+    decoder.queue.push_back(audioFrame(980, 0, "old-decoder-cache"));
+    render.queue.push_back(audioFrame(1000, 0, "old-render-frame"));
+    render.queue.push_back(eofFrame(0));
 
-    // seek
-    if (opts.enablePreFlush) {
+    hjstudy::logFields(
+        label,
+        "before-seek",
+        {{"decoderQueue", std::to_string(decoder.queue.size())},
+         {"demuxerEof", hjstudy::yesNo(demuxer.eof)},
+         {"renderQueue", std::to_string(render.queue.size())}});
+
+    if (protection.preFlushRender) {
         render.preFlush = true;
-        hjstudy::logLine("seek", "setPreFlush(true)");
+        hjstudy::logLine("render", "setPreFlush(true)");
     }
 
-    if (opts.enableFlush) {
-        for (auto* stage : {&demuxer, &decoder, &render}) {
-            auto before = stage->queue.size();
-            stage->queue.clear();
-            stage->eof = false;
-            hjstudy::logFields(
-                stage->name, "flush",
-                {{"queueBefore", std::to_string(before)},
-                 {"queueAfter", "0"},
-                 {"eof", "reset"}});
-        }
+    if (protection.flushQueues) {
+        // 正确 seek 需要把旧链路上的缓存都清掉。
+        flushStage(demuxer);
+        flushStage(decoder);
+        flushStage(render);
+    } else {
+        hjstudy::logLine("flush", "missing flush: old queues remain visible");
     }
 
-    if (opts.enableEofReset) {
+    if (protection.resetEof) {
+        // 旧播放轮次的 EOF 不能污染新一轮播放。
         demuxer.eof = false;
-        hjstudy::logLine("eof", "flags reset for new generation");
+        decoder.eof = false;
+        render.eof = false;
+        hjstudy::logLine("eof", "reset EOF flags for the new playback generation");
+    } else if (demuxer.eof) {
+        hjstudy::logLine("eof", "old demuxer EOF is still set");
     }
 
     ++generation;
-
-    // after seek: demuxer produces new frames
-    demuxer.queue.push_back(hjstudy::Frame{5000, hjstudy::MediaType::Audio, false, generation, "new-frame"});
-    demuxer.queue.push_back(hjstudy::Frame{5020, hjstudy::MediaType::Audio, false, generation, "new-frame"});
-
-    // propagate
-    for (auto& f : demuxer.queue) {
-        decoder.queue.push_back(f);
-    }
-    demuxer.queue.clear();
-    for (auto& f : decoder.queue) {
-        render.queue.push_back(f);
-    }
-    decoder.queue.clear();
-
-    // render consumes
     render.preFlush = false;
 
+    // seek 成功后，从新位置重新吐出新帧。
+    demuxer.queue.push_back(audioFrame(5000, generation, "new-frame"));
+    demuxer.queue.push_back(audioFrame(5020, generation, "new-frame"));
+    demuxer.queue.push_back(eofFrame(generation));
+    moveAll(demuxer, decoder);
+    moveAll(decoder, render);
+
     while (!render.queue.empty()) {
-        auto f = std::move(render.queue.front());
+        auto frame = std::move(render.queue.front());
         render.queue.pop_front();
 
-        if (opts.enableGenerationGate && f.generation != generation) {
-            ++droppedStale;
-            hjstudy::logFields("render", "drop-stale",
-                               {{"gen", std::to_string(f.generation)},
-                                {"pts", std::to_string(f.ptsMs)}});
+        if (protection.generationGate && frame.generation != generation) {
+            // generation gate 用来隔离旧 seek 轮次晚到的残留帧。
+            ++droppedStaleFrames;
+            hjstudy::logFields(
+                "render",
+                "drop-stale",
+                {{"frameGeneration", std::to_string(frame.generation)}, {"ptsMs", std::to_string(frame.ptsMs)}});
             continue;
         }
 
-        if (f.payload == "eof") {
-            if (opts.enableGenerationGate) {
-                ++droppedStale;
-                hjstudy::logFields("render", "drop-stale-eof",
-                                   {{"gen", std::to_string(f.generation)}});
-                continue;
-            }
+        if (frame.payload == "eof") {
+            // broken 场景里，旧 EOF 可能在新帧前被消费，导致提前结束。
             render.eof = true;
-            hjstudy::logFields("render", "eof-consumed", {{"remainingQueue", std::to_string(render.queue.size())}});
+            hjstudy::logFields(
+                "render",
+                "eof",
+                {{"frameGeneration", std::to_string(frame.generation)},
+                 {"remainingQueue", std::to_string(render.queue.size())}});
             break;
         }
 
-        if (f.ptsMs < targetPts) {
-            ++renderedOld;
-            hjstudy::logFields("render", "RENDER-OLD-AFTER-SEEK",
-                               {{"pts", std::to_string(f.ptsMs)},
-                                {"target", std::to_string(targetPts)}});
+        if (frame.ptsMs < targetPtsMs) {
+            // seek 到 5000ms 后还渲染出 5000ms 前的帧，就说明旧状态泄漏了。
+            ++renderedOldFrames;
+            hjstudy::logFields(
+                "render",
+                "render-old-after-seek",
+                {{"ptsMs", std::to_string(frame.ptsMs)}, {"targetPtsMs", std::to_string(targetPtsMs)}});
         } else {
-            hjstudy::logFields("render", "render-new", {{"pts", std::to_string(f.ptsMs)}});
+            ++renderedNewFrames;
+            hjstudy::logFields("render", "render-new", {{"ptsMs", std::to_string(frame.ptsMs)}});
         }
     }
 
-    hjstudy::logFields(label, "summary",
-                       {{"renderedOldFrames", std::to_string(renderedOld)},
-                        {"renderQueueLeft", std::to_string(render.queue.size())},
-                        {"generation", std::to_string(generation)}});
-
-    if (expectOldFrames && renderedOld > 0) {
-        hjstudy::logLine("verdict", "OK — broken seek reproduced old frames as expected");
-    } else if (!expectOldFrames && renderedOld == 0) {
-        hjstudy::logLine("verdict", "OK — fixed seek consumed only new generation frames");
-    } else {
-        hjstudy::logLine("verdict", "UNEXPECTED — check the scenario");
-    }
+    hjstudy::logFields(
+        label,
+        "summary",
+        {{"droppedStaleFrames", std::to_string(droppedStaleFrames)},
+         {"renderedNewFrames", std::to_string(renderedNewFrames)},
+         {"renderedOldFrames", std::to_string(renderedOldFrames)},
+         {"renderQueueLeft", std::to_string(render.queue.size())}});
 }
 
-void run()
+void runSeekProtectionReview()
 {
-    hjstudy::printTitle("Section 4: seek flush propagation");
-    hjstudy::logLine("point", "seek 需要 preFlush + flush + EOF reset + generation gate 组合");
+    hjstudy::printTitle("Section 4: seek protections");
+    hjstudy::logLine("point", "fixed seek combines preFlush, downstream flush, EOF reset, and generation gate");
 
-    runOneCase("broken-seek (missing all protections)",
-               SeekOptions{false, false, false, false},
-               true);
-
-    runOneCase("fixed-seek (all protections enabled)",
-               SeekOptions{true, true, true, true},
-               false);
+    // broken-seek：复现问题。
+    runSeekCase("broken-seek", SeekProtection{false, false, false, false});
+    // fixed-seek：打开所有保护后观察问题消失。
+    runSeekCase("fixed-seek", SeekProtection{true, true, true, true});
 }
 
-} // namespace section4
-
 // ---------------------------------------------------------------------------
-// Section 5 — player comparison
-//
-// 验证核心理解：不同产品目标 → 不同技术选择。
-// 对比 LivePlayer / VodPlayer / MusicPlayer 在 seek、dropping、EOF 上的差异。
+// Section 5: player comparison.
 // ---------------------------------------------------------------------------
-
-namespace section5 {
 
 struct PlayerTrait {
     std::string name;
     std::string scene;
-    bool seekable;
-    bool lowLatency;
-    bool hasDropping;
+    bool seekable{};
+    bool lowLatency{};
+    bool dropping{};
     std::string eofBehavior;
 };
 
-void run()
+void runPlayerComparisonReview()
 {
     hjstudy::printTitle("Section 5: player comparison");
-    hjstudy::logLine("point", "产品目标决定技术策略：直播保实时，点播保完整，音乐保 repeat");
 
+    // 这一段不是模拟执行链路，而是复盘三类播放器的产品目标差异。
     const std::vector<PlayerTrait> players = {
-        {"LivePlayer", "直播音视频流", false, true, true,
-         "demuxer EOF/codec error → reset demuxer, do NOT end session"},
-        {"VodPlayer", "点播音视频", true, false, false,
-         "demuxer EOF → wait audio+video render EOF → report graph EOF"},
-        {"MusicPlayer", "纯音频播放", true, false, false,
-         "demuxer EOF → depends on repeats; final audioRender EOF = graph EOF"},
+        {"LivePlayer", "live audio/video stream", false, true, true,
+         "network or demuxer EOF tends to reset/reconnect instead of ending the session"},
+        {"VodPlayer", "seekable audio/video file", true, false, false,
+         "demuxer EOF waits for audio and video render EOF before graph EOF"},
+        {"MusicPlayer", "pure audio playback", true, false, false,
+         "demuxer EOF depends on repeat; final audio render EOF means playback is done"},
     };
 
-    for (const auto& p : players) {
-        hjstudy::logFields("player", p.name,
-                           {{"scene", p.scene},
-                            {"seekable", hjstudy::yesNo(p.seekable)},
-                            {"lowLatency", hjstudy::yesNo(p.lowLatency)},
-                            {"hasDropping", hjstudy::yesNo(p.hasDropping)},
-                            {"eof", p.eofBehavior}});
+    for (const auto& player : players) {
+        hjstudy::logFields(
+            "player",
+            player.name,
+            {{"dropping", hjstudy::yesNo(player.dropping)},
+             {"eof", player.eofBehavior},
+             {"lowLatency", hjstudy::yesNo(player.lowLatency)},
+             {"scene", player.scene},
+             {"seekable", hjstudy::yesNo(player.seekable)}});
     }
 
-    hjstudy::logLine("", "");
-    hjstudy::logLine("takeaway", "LivePlayer 在 demuxer 后接 HJPluginAVDropping 控制延迟");
-    hjstudy::logLine("takeaway", "VodPlayer/MusicPlayer 无 dropping，依靠反压和 seek 语义");
-    hjstudy::logLine("takeaway", "MusicPlayer EOF 最复杂：repeat 影响 demuxer EOF → 最终 graph EOF 的判断时机");
+    hjstudy::logLine("takeaway", "live favors latency; VOD favors completeness; music favors audio continuity and repeat/EOF semantics");
 }
 
-} // namespace section5
-
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
+} // namespace
 
 int main()
 {
+    // 运行顺序按“线程模型 -> 调度去重 -> 生命周期 -> seek 修复 -> 产品差异”组织，
+    // 对应第 2 周复盘里的主线。
     hjstudy::printReferences(
         "study/week2-thread-plugin-player-practice.md Day 14",
         "studyNote/week2-review.md",
         {
             "src/utils/HJThread/doc/README.md",
             "src/plugins/doc/HJPlugin.md",
+            "src/plugins/doc/HJMediaFrameDeque.md",
+            "src/graphs/HJGraphLivePlayer.cpp",
+            "src/graphs/HJGraphVodPlayer.cpp",
             "src/graphs/HJGraphMusicPlayer.cpp",
-            "src/plugins/HJPluginAVDropping.cpp",
             "src/core/HJMediaPlayer.cc",
             "src/core/HJMediaNode.cc",
         });
 
-    section1::run();
-    section2::run();
-    section3::run();
-    section4::run();
-    section5::run();
+    runDeliverRunTaskReview();
+    runLatestOnlyReview();
+    runWeakPtrReview();
+    runSeekProtectionReview();
+    runPlayerComparisonReview();
 
-    hjstudy::printTitle("Week 2 Review Complete");
-    hjstudy::logLine("review", "复习笔记: studyNote/week2-review.md");
-    hjstudy::logLine("review", "面试问答: 15 Q&A covering thread/plugin/player/seek/drop/teardown");
-    hjstudy::logLine("review", "5-min talk: async dispatch model intro script available in studyNote/week2-review.md");
+    hjstudy::printTitle("Week 2 review complete");
+    hjstudy::logLine("note", "read studyNote/week2-review.md for the 15 Q&A and 5-minute talk script");
     return 0;
 }
