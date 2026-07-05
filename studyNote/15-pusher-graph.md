@@ -108,6 +108,44 @@ flowchart LR
     Interleave -. openRecorder branch .-> FileMux --> LocalFile["local record file"]
 ```
 
+### 点播数据流（对比）
+
+```mermaid
+flowchart LR
+    subgraph Input["VOD input"]
+        Url["HJMediaUrl\nfile / http / local server"]
+        Demuxer["HJPluginFFDemuxer\ndemux packets"]
+    end
+
+    subgraph VideoPath["Video path"]
+        VideoDecoder{"video decoder type"}
+        FFVideoDecoder["HJPluginVideoFFDecoder\nsoftware decode"]
+        OHVideoDecoder["HJPluginVideoOHDecoder\nHarmony hardware decode"]
+        VideoRender["HJPluginVideoRender\nvideo frame render"]
+        Display["NativeWindow / render target"]
+    end
+
+    subgraph AudioPath["Audio path"]
+        AudioDecoder["HJPluginAudioFFDecoder\ndecode audio packets"]
+        AudioResampler["HJPluginAudioResampler\nsample format / rate / channel"]
+        AudioRender["HJPluginAudioOHRender or WASRender\naudio device output"]
+    end
+
+    Url --> Demuxer
+    Demuxer -- video packets --> VideoDecoder
+    VideoDecoder -- software path --> FFVideoDecoder
+    VideoDecoder -- hardware path --> OHVideoDecoder
+    FFVideoDecoder -- video frames --> VideoRender
+    OHVideoDecoder -- decoded video frames --> VideoRender
+    VideoRender --> Display
+
+    Demuxer -- audio packets --> AudioDecoder
+    AudioDecoder -- decoded PCM --> AudioResampler
+    AudioResampler -- render-ready PCM --> AudioRender
+```
+
+这张点播图对应 `src/graphs/HJGraphVodPlayer.cpp`：`demuxer` 从 URL 读包，视频按配置走 FF 软解或 OH 硬解后进入 `HJPluginVideoRender`，音频走 `AudioFFDecoder -> AudioResampler -> AudioRender`。和 Pusher 图相比，Pusher 是设备/渲染链生产数据并送网络，VodPlayer 是文件/网络源输入数据并送本地渲染。
+
 ### 控制流
 
 ```mermaid
