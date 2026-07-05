@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -21,10 +22,36 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace hjstudy {
+
+inline void configureUtf8Console()
+{
+    static const bool configured = [] {
+#if defined(_WIN32)
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+        std::setlocale(LC_ALL, ".UTF-8");
+#else
+        std::setlocale(LC_ALL, "");
+#endif
+        return true;
+    }();
+    (void)configured;
+}
 
 inline void printTitle(std::string_view title)
 {
+    configureUtf8Console();
     std::cout << "\n=== " << title << " ===\n";
 }
 
@@ -33,6 +60,7 @@ inline void printReferences(
     std::string_view note,
     std::initializer_list<std::string_view> sourcePaths)
 {
+    configureUtf8Console();
     std::cout << "Study plan: " << plan << '\n';
     std::cout << "Study note: " << note << '\n';
     std::cout << "HJMedia references:\n";
@@ -44,6 +72,7 @@ inline void printReferences(
 
 inline void logLine(std::string_view component, std::string_view action)
 {
+    configureUtf8Console();
     std::cout << "[" << component << "] " << action << '\n';
 }
 
@@ -52,6 +81,7 @@ inline void logFields(
     std::string_view action,
     const std::map<std::string, std::string>& fields)
 {
+    configureUtf8Console();
     std::cout << "[" << component << "] " << action;
     for (const auto& item : fields) {
         std::cout << " " << item.first << "=" << item.second;
