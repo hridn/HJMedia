@@ -1,0 +1,4 @@
+interface:
+  display_name: "HJMedia Daily Study"
+  short_description: "Run HJMedia study sessions with Mermaid diagrams"
+  default_prompt: "Use $hjmedia-daily-study to continue today's HJMedia learning session with notes, demos, and Mermaid diagrams."
