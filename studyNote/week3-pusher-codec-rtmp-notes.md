@@ -46,29 +46,45 @@ capture -> process -> encode -> mux/interleave -> RTMP
 
 ### 今日阅读
 
-- [ ] `src/media` 中 audio / capture / codec 相关实现
-- [ ] fdk-aac 使用位置
-- [ ] miniaudio 使用位置
+- [x] `src/media/capture/hsys/HJACaptureOH.cc`
+- [x] `src/media/codec/HJAEncFDKAAC.cc`
+- [x] `src/plugins/hsys/HJPluginAudioOHCapturer.cpp`
+- [x] `src/plugins/HJPluginFDKAACEncoder.cpp`
+- [x] `src/media/render/HJARenderMini.cc`
+
+详细笔记：`studyNote/16-audio-capture-aac.md`
+练习 demo：`studyDemo/day16_pcm_aac_frame_calc.cpp`
 
 ### PCM 参数换算
 
 ```text
-采样率：
-声道数：
-位深：
-每秒字节数：
-每 10ms 字节数：
-每 20ms 字节数：
+采样率：48000
+声道数：2
+位深：16bit / 2 bytes
+每秒字节数：48000 * 2 * 2 = 192000
+每 10ms 字节数：1920
+每 20ms 字节数：3840
+AAC-LC 1024 samples/channel 输入字节数：1024 * 2 * 2 = 4096
+FDK-AAC numInSamples：4096 / 2 = 2048
 ```
 
 ### AAC 拼帧伪代码
 
 ```cpp
+bufferedSamplesPerChannel += captureChunk.samplesPerChannel;
 
+while (bufferedSamplesPerChannel >= 1024) {
+    inputBytes = 1024 * channels * bytesPerSample;
+    fdkaacNumInSamples = inputBytes / bytesPerSample;
+    encodeOneAacFrame(inputBytes, fdkaacNumInSamples, pts);
+    bufferedSamplesPerChannel -= 1024;
+    pts += 1024 * 1000.0 / sampleRate;
+}
 ```
 
 ### 今日总结
 
+PCM 是编码前的原始样本，大小由采样率、声道数和 sample format 决定；AAC packet 是编码后的压缩结果，大小不等于固定的 PCM 输入字节数。HJMedia 的 Harmony 采集路径用 `HJACaptureOH::OnReadData` 产出 S16 PCM AVFrame，`HJAEncFDKAAC::run` 再把输入字节数换成 FDK-AAC 的 `numInSamples`。
 
 ## Day 17：视频编码基础实践
 
