@@ -39,8 +39,9 @@ When the user asks to "完成", "补齐", "生成", "加注释", or otherwise re
    - keep production HJMedia source untouched unless explicitly requested.
 6. For every newly written or substantially updated demo, add Chinese comments that explain the learning point, key control/data flow, and the corresponding HJMedia source semantics.
 7. For every newly written or substantially updated note, add Mermaid diagrams for both data flow and control flow.
-8. Build and run the day demo when practical. If `cmake` is not on PATH, try `C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe`.
-9. Finish with changed files, verification result, and a concise interview-ready explanation.
+8. For every newly written or substantially updated note, include a `## 问题解答` section that records the user's study questions and the answers given during the session.
+9. Build and run the day demo when practical. If `cmake` is not on PATH, try `C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe`.
+10. Finish with changed files, verification result, and a concise interview-ready explanation.
 
 ## Mermaid Diagram Requirements
 
@@ -69,6 +70,17 @@ sequenceDiagram
 - Keep diagrams small enough to review in Markdown. If a day has a broken/fixed debugging scenario, include the fixed path in the main diagram and mention the broken path in labels or notes.
 - If an existing note already has plain-text data/control flow, convert or supplement it with corresponding Mermaid diagrams instead of leaving only prose.
 
+## Question Answer Requirements
+
+Every daily note created or substantially updated by this skill must include a `## 问题解答` section.
+
+- Use this section to record the user's questions asked during the learning session and the answers given by Codex.
+- Add new Q&A entries incrementally when the user asks follow-up questions about the day's topic.
+- Keep each question as a concrete heading, such as `### FLV 如何区分音频帧和视频帧？`.
+- Keep answers tied to real HJMedia source paths, classes, functions, diagrams, demos, or terminology when possible.
+- If the note already has a `## 问题解答` section, append or update entries there instead of creating a duplicate section.
+- If no question has been asked yet, still create the section with a short placeholder such as `本节用于记录学习过程中的提问和回答。`.
+
 ## Finished Artifact Checklist
 
 A daily result is complete only when it includes:
@@ -76,6 +88,7 @@ A daily result is complete only when it includes:
 - exact source/doc paths read;
 - a data flow, control flow, lifecycle, queue, thread, or state explanation;
 - a Mermaid data-flow diagram and a Mermaid control-flow diagram in the note;
+- a `## 问题解答` section in the note for the user's questions and answers;
 - a demo, pseudocode, logging plan, comparison table, or debugging playbook;
 - a note file with source entries, observations, risks, and conclusion;
 - compile/run verification or a concrete reason it could not be run;

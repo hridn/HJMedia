@@ -117,32 +117,47 @@ PCM 是编码前的原始样本，大小由采样率、声道数和 sample forma
 
 ### 今日阅读
 
-- [ ] `docs/README_HJOHMuxer.md`
-- [ ] `src/media/muxer`
-- [ ] `src/media/net`
-- [ ] `third_party/librtmp` 使用位置
+- [x] `docs/README_HJOHMuxer.md`
+- [x] `src/media/muxer`
+- [x] `src/plugins/HJPluginAVInterleave.cpp`
+- [x] `src/plugins/HJPluginMuxer.cpp`
+- [x] `src/plugins/HJPluginRTMPMuxer.cpp`
+- [x] `third_party/librtmp` 使用位置
+
+详细笔记：`studyNote/18-rtmp-muxer-timestamp.md`
+练习 demo：`studyDemo/day18_av_interleave.cpp`
 
 ### 音视频交织伪代码
 
 ```cpp
+audio = preview(audioInput);
+video = preview(videoInput);
 
+if (audio && (!video || audio.dts <= video.dts)) {
+    out = receive(audioInput);
+} else if (video) {
+    out = receive(videoInput);
+}
+
+deliverToOutputs(out);
 ```
 
 ### 时间戳模拟
 
 | 类型 | 间隔 | 示例时间戳 |
 |---|---|---|
-| Audio | 20ms |  |
-| Video | 33ms |  |
+| Audio | 20ms | DTS/PTS: 0, 20, 40, 60, 80 |
+| Video | 33ms | 无 B 帧 DTS=PTS: 0, 33, 66, 99 |
+| Video with B frame | 33ms | DTS: 0, 33, 66；PTS: 0, 33, 99；CTS=PTS-DTS |
 
 ### RTMP 失败策略
 
 ```text
-发送失败：
-重试条件：
-丢帧条件：
-断开条件：
-恢复条件：
+发送失败：RTMP_Write 返回 <= 0，HJRTMPWrapper 发出 SEND_Error。
+重试条件：HJRTMPAsyncWrapper 收到连接/收发失败事件后延迟 destroyAVIO + retryAVIO。
+丢帧条件：HJRTMPPacketManager 缓存时长超过阈值，优先丢低优先级视频帧。
+断开条件：连接失败、流连接失败、收发失败、低码率持续超时。
+恢复条件：STREAM_CONNECTED 后重置 retry interval，并从最近关键帧/GOP 起点继续。
 ```
 
 ## Day 19：弱网和队列堆积实践
