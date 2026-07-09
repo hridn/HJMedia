@@ -165,23 +165,24 @@ deliverToOutputs(out);
 ### 今日实践
 
 ```text
-network backpressure demo 文件：
-模拟的问题：
-生产速度：
-网络发送速度：
-队列最大容量：
-是否丢帧：
-观察结果：
+network backpressure demo 文件：studyDemo/day19_network_backpressure.cpp
+详细笔记：studyNote/19-weak-network-queue-practice.md
+模拟的问题：编码持续生产，网络阶段性变慢，RTMP packet 队列堆积
+生产速度：每 20ms 生产音频 packet，每 40ms 生产视频 packet
+网络发送速度：0-5 tick 正常，6-18 tick 弱网，19 tick 后恢复
+队列最大容量：demo 用 queueDurationMs 模拟延迟水位，而不是固定 packet 个数
+是否丢帧：DropLowPriority / AdaptiveBitrate 会丢非关键视频帧
+观察结果：阻塞编码降低产出但影响上游；丢帧压住延迟；降码率减少后续包大小
 ```
 
 ### 策略对比
 
 | 策略 | 优点 | 缺点 | 适合场景 |
 |---|---|---|---|
-| 阻塞编码 |  |  |  |
-| 丢低优先级帧 |  |  |  |
-| 降低码率 |  |  |  |
-| 断线重连 |  |  |  |
+| 阻塞编码 | 不主动丢帧，内容完整 | 上游采集/编码被网络拖住，实时性差 | 非实时上传 |
+| 丢低优先级帧 | 快速限制延迟和内存，保留关键帧/GOP 起点 | 画面可能跳帧 | 直播推流 |
+| 降低码率 | 从源头减少后续 packet 大小 | 调整有滞后，画质下降 | 网络持续变差 |
+| 断线重连 | 处理连接异常和持续低码率 | 频繁重连会增加抖动 | 链路异常或低码率超时 |
 
 ## Day 20：渲染 / 美颜 / AI 检测链路概览
 
