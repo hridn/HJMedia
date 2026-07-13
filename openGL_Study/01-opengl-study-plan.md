@@ -41,7 +41,7 @@
 - `src/comp/graphic/HJOGEGLSurface.cpp`
 
 实践：
-- 运行 `studyDemo/day29_egl_surface_lifecycle.cpp`
+- 运行 `openGL_Study/demo/01-egl-surface-lifecycle.cpp`
 - 梳理 `HJOGRenderEnv::priCoreInit` 创建 1x1 offscreen surface 的原因。
 - 梳理 `HJOGRenderEnv::priUpdateEglSurface` 如何把窗口创建/变更/销毁映射为 EGLSurface 生命周期。
 
@@ -59,7 +59,7 @@
 - `src/comp/rte/HJRteComDraw.cpp`
 
 实践：
-- 运行 `studyDemo/day30_texture_shader_fbo_chain.cpp`
+- 运行 `openGL_Study/demo/02-texture-shader-fbo-chain.cpp`
 - 对比 `GL_TEXTURE_EXTERNAL_OES` 输入和 `GL_TEXTURE_2D` 中间纹理。
 - 追踪 `HJRteComDrawFBO::bind -> shader->draw -> HJRteComDrawFBO::unbind`。
 
@@ -75,7 +75,7 @@
 - `src/comp/rte/HJRteComDraw.cpp`
 
 实践：
-- 运行 `studyDemo/day31_pbo_readback_pipeline.cpp`
+- 运行 `openGL_Study/demo/03-pbo-readback-pipeline.cpp`
 - 复述 `glReadPixels` 写当前 PBO、`glMapBufferRange` 读上一 PBO 的延迟一帧模型。
 
 验收：
@@ -135,7 +135,7 @@
 
 ## 对应产物
 
-- 学习笔记：`studyNote/opengl-api-project-practice.md`
-- Demo 1：`studyDemo/day29_egl_surface_lifecycle.cpp`
-- Demo 2：`studyDemo/day30_texture_shader_fbo_chain.cpp`
-- Demo 3：`studyDemo/day31_pbo_readback_pipeline.cpp`
+- 学习笔记：`openGL_Study/02-opengl-study-notes.md`
+- Demo 1：`openGL_Study/demo/01-egl-surface-lifecycle.cpp`
+- Demo 2：`openGL_Study/demo/02-texture-shader-fbo-chain.cpp`
+- Demo 3：`openGL_Study/demo/03-pbo-readback-pipeline.cpp`

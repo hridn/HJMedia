@@ -232,8 +232,8 @@ int main()
 {
     hjstudy::printTitle("Day 29 - EGL Surface 生命周期");
     hjstudy::printReferences(
-        "study/opengl-api-project-practice-plan.md",
-        "studyNote/opengl-api-project-practice.md",
+        "openGL_Study/01-opengl-study-plan.md",
+        "openGL_Study/02-opengl-study-notes.md",
         {
             "src/comp/graphic/hsys/HJOGEGLCore.cpp",
             "src/comp/graphic/hsys/HJOGRenderEnv.cpp",

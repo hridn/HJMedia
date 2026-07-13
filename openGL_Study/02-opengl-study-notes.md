@@ -2,7 +2,7 @@
 
 ## 今日阅读
 
-- `study/opengl-api-project-practice-plan.md`
+- `openGL_Study/01-opengl-study-plan.md`
 - `src/comp/graphic/hsys/HJOGEGLCore.cpp`
 - `src/comp/graphic/hsys/HJOGRenderEnv.cpp`
 - `src/comp/graphic/HJOGEGLSurface.cpp`
@@ -102,9 +102,9 @@ sequenceDiagram
 
 | Demo | 对应源码 | 验证点 |
 |---|---|---|
-| `studyDemo/day29_egl_surface_lifecycle.cpp` | `HJOGEGLCore.cpp`, `HJOGRenderEnv.cpp`, `HJOGEGLSurface.cpp` | 模拟 offscreen surface、window surface、makeCurrent/draw/swap/destroy |
-| `studyDemo/day30_texture_shader_fbo_chain.cpp` | `HJOGCommon.cpp`, `HJOGShaderProgram.cpp`, `HJOGCopyShaderStrip.cpp`, `HJOGFBOCtrl.cpp`, `HJRteComDraw.cpp` | 模拟 OES/2D 纹理、shader draw、FBO attach/detach、滤镜链 |
-| `studyDemo/day31_pbo_readback_pipeline.cpp` | `HJPBORead.cpp`, `HJPBOReadWrapper.cpp`, `HJRteComDraw.cpp` | 模拟双 PBO 延迟一帧读取和 `HJ_WOULD_BLOCK` |
+| `openGL_Study/demo/01-egl-surface-lifecycle.cpp` | `HJOGEGLCore.cpp`, `HJOGRenderEnv.cpp`, `HJOGEGLSurface.cpp` | 模拟 offscreen surface、window surface、makeCurrent/draw/swap/destroy |
+| `openGL_Study/demo/02-texture-shader-fbo-chain.cpp` | `HJOGCommon.cpp`, `HJOGShaderProgram.cpp`, `HJOGCopyShaderStrip.cpp`, `HJOGFBOCtrl.cpp`, `HJRteComDraw.cpp` | 模拟 OES/2D 纹理、shader draw、FBO attach/detach、滤镜链 |
+| `openGL_Study/demo/03-pbo-readback-pipeline.cpp` | `HJPBORead.cpp`, `HJPBOReadWrapper.cpp`, `HJRteComDraw.cpp` | 模拟双 PBO 延迟一帧读取和 `HJ_WOULD_BLOCK` |
 
 ## 风险和定位点
 
@@ -132,8 +132,8 @@ sequenceDiagram
 
 本次已完成验证：
 
-- 配置：`"C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe" -S studyDemo -B studyDemo/output`
-- 构建：`day29_egl_surface_lifecycle`、`day30_texture_shader_fbo_chain`、`day31_pbo_readback_pipeline` 均通过。
+- 配置：`"C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe" -S openGL_Study/demo -B openGL_Study/demo/output`
+- 构建：`opengl_01_egl_surface_lifecycle`、`opengl_02_texture_shader_fbo_chain`、`opengl_03_pbo_readback_pipeline` 均通过。
 - 运行：三个 demo 均运行成功。
 - 输出检查：
   - day29 输出包含 `eglCreatePbufferSurface`、`eglCreateWindowSurface`、`eglMakeCurrent`、`eglSwapBuffers`、surface change/destroy。
@@ -143,13 +143,13 @@ sequenceDiagram
 复现命令：
 
 ```powershell
-cmake --build studyDemo/output --target day29_egl_surface_lifecycle
-cmake --build studyDemo/output --target day30_texture_shader_fbo_chain
-cmake --build studyDemo/output --target day31_pbo_readback_pipeline
+cmake --build openGL_Study/demo/output --target opengl_01_egl_surface_lifecycle
+cmake --build openGL_Study/demo/output --target opengl_02_texture_shader_fbo_chain
+cmake --build openGL_Study/demo/output --target opengl_03_pbo_readback_pipeline
 ```
 
-如果 `studyDemo/output` 未配置，则先运行：
+如果 `openGL_Study/demo/output` 未配置，则先运行：
 
 ```powershell
-cmake -S studyDemo -B studyDemo/output
+cmake -S openGL_Study/demo -B openGL_Study/demo/output
 ```

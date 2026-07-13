@@ -174,6 +174,35 @@ peakQueuePackets / peakQueueDurationMs / finalKbps
 
 本节用于记录学习过程中的提问和回答。
 
+
+### 第 19 天笔记中数据流每个阶段分别运行在哪个线程上？
+
+`Audio/Video Encoders` 和 `HJPluginAVInterleave` 是各自插件的 `HJLooperThread`；`HJPluginRTMPMuxer / HJPluginMuxer`、`HJRTMPMuxer::writeFrame`、`HJRTMPMuxer::addRTMPPacket`、`HJRTMPPacketManager::push/drop` 运行在 Muxer 插件线程；`HJRTMPPacketManager::waitTag`、`HJRTMPAsyncWrapper::run`、`HJRTMPWrapper::send`、`RTMP_Write` 运行在 `HJRTMPAsyncWrapper` 创建的独立 RTMP executor 线程。网络事件如 `HJRTMP_EVENT_NET_BITRATE` 从 RTMP executor 线程产生，业务层 listener 是否切线程取决于上层封装。
+
+这个线程划分解释了弱网问题的核心：编码和 muxer 线程还在持续 push packet，但 RTMP executor 线程发送变慢，跨线程队列 `HJRTMPPacketManager::m_packets` 就会堆积，所以需要在 muxer/packet manager 侧按缓存时长丢帧或触发降码率。
+
+补充表：
+
+| 数据流阶段 | 主要源码入口 | 运行线程 / 调度者 |
+|---|---|---|
+| Audio/Video Encoders 产出 encoded frame | `HJPluginFDKAACEncoder::runTask`、`HJPluginVideoOHEncoder::deliverToOutputs` 等 | 编码插件自己的 `HJLooperThread`，或 Graph 传入的共享 `HJLooperThread`。硬编底层可能还有平台 codec callback 线程，但进入 HJMedia 图后通过插件队列交给插件线程处理。 |
+| `HJPluginAVInterleave` 音视频交织 | `src/plugins/HJPluginAVInterleave.cpp::runTask` | Interleave 插件的 `HJLooperThread`。它从音频/视频输入队列 `receive()`，再 `deliverToOutputs()` 到下游 muxer 输入队列。 |
+| `HJPluginRTMPMuxer / HJPluginMuxer` 消费 frame | `src/plugins/HJPluginMuxer.cpp::runTask` | Muxer 插件的 `HJLooperThread`。`internalInit()` 没有外部 thread 时会设置 `createThread=true`，由 `HJPlugin::internalInit` 创建线程。 |
+| `HJRTMPMuxer::writeFrame/addRTMPPacket` 封装 FLV packet | `src/media/muxer/HJRTMPMuxer.cc::writeFrame`、`addRTMPPacket` | 同步运行在 Muxer 插件线程中，因为它由 `HJPluginMuxer::runTask` 直接调用。 |
+| `HJRTMPPacketManager::push/drop/evaluateBitrate` | `src/media/muxer/HJRTMPPacketManager.cc`、`HJRTMPBitrateAdapter.cc` | 主要运行在 Muxer 插件线程中。这里负责入队、统计 queue duration、按阈值丢帧、计算推荐码率。 |
+| `HJRTMPPacketManager::waitTag` 出队 | `src/media/muxer/HJRTMPPacketManager.cc::waitTag` | RTMP async executor 线程调用。队列本身是跨线程边界：Muxer 插件线程 push，RTMP async 线程 wait/pop。 |
+| `HJRTMPAsyncWrapper::run` 网络发送循环 | `src/media/muxer/HJRTMPAsyncWrapper.cc::run` | `HJRTMPAsyncWrapper` 构造时创建的独立 `HJExecutor`，名称形如 `*_rtmp_async_wrapper`。 |
+| `HJRTMPWrapper::send -> RTMP_Write` | `src/media/muxer/HJRTMPWrapper.cc::send` | RTMP async executor 线程。弱网阻塞主要卡在这里，不应反向阻塞编码插件线程。 |
+| `HJRTMP_EVENT_NET_BITRATE / LOW_BITRATE / RETRY` 事件 | `HJRTMPAsyncWrapper::run`、`checkNetBitrate`、`retryAVIO` | 事件从 RTMP async executor 线程产生；`HJRTMPMuxer::onRTMPWrapperNotify` 在该回调链上更新 `PacketManager` 的 net bitrate。业务 listener 是否切到 UI/业务线程，取决于上层是否再 repost。 |
+
+因此 day19 数据流可以按线程切成三段：
+
+1. 上游编码/交织插件线程：持续生产 encoded `HJMediaFrame`，通过插件队列交给 muxer。
+2. Muxer 插件线程：把 frame 封装成 FLV packet，写入 `HJRTMPPacketManager::m_packets`，并做 queue duration、drop、bitrate adapter 计算。
+3. RTMP async executor 线程：从 packet manager `waitTag()` 取 tag，执行 `recv/send/RTMP_Write`，并把网络码率、低码率、重连事件回传。
+
+弱网时真正慢的是第 3 段网络发送线程；如果第 2 段无限入队不做丢帧/降码率，`m_packets` 会持续变长，表现为延迟和内存上涨。
+
 ## 结论
 
 弱网推流的核心矛盾是实时性和完整性的冲突。播放器/观众更关心“看到接近实时的画面”，不是“所有历史帧都必须送到”。因此 HJMedia 的 RTMP 队列策略不是无限缓存，而是用 `HJRTMPPacketManager` 统计缓存时长和丢帧，用 `HJRTMPBitrateAdapter` 降低后续码率，用 `HJRTMPAsyncWrapper` 上报网络码率、低码率和重连事件。真正的排查重点是队列时长、输出码率、丢帧比例和重连次数，而不是只看当前是否还在发送。
@@ -181,3 +210,4 @@ peakQueuePackets / peakQueueDurationMs / finalKbps
 ## 面试复述
 
 我阅读并用 demo 复盘了 HJMedia 的弱网推流处理。编码端持续产出 packet，网络端发送能力下降时，`HJRTMPPacketManager` 的队列会堆积，延迟和内存都会上涨。HJMedia 通过缓存时长判断是否需要丢帧，优先丢低优先级视频帧，并尽量保留最近 GOP；同时用 `HJRTMPBitrateAdapter` 根据输入/输出码率、网络码率、丢帧比例和队列时长调整推荐码率。对于持续低码率或收发失败，`HJRTMPAsyncWrapper` 会通知低码率、重试或重连事件。这个练习是源码分析和小型 C++ 模拟，用来说明直播推流不能无限缓存，以及弱网下如何在实时性、画质和完整性之间取舍。
+

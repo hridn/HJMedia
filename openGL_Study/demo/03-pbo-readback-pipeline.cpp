@@ -113,8 +113,8 @@ int main()
 {
     hjstudy::printTitle("Day 31 - PBO 双缓冲回读");
     hjstudy::printReferences(
-        "study/opengl-api-project-practice-plan.md",
-        "studyNote/opengl-api-project-practice.md",
+        "openGL_Study/01-opengl-study-plan.md",
+        "openGL_Study/02-opengl-study-notes.md",
         {
             "src/comp/graphic/HJPBORead.cpp",
             "src/comp/graphic/HJPBOReadWrapper.cpp",

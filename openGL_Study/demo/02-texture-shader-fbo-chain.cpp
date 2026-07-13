@@ -158,8 +158,8 @@ int main()
 {
     hjstudy::printTitle("Day 30 - Texture / Shader / FBO 渲染链");
     hjstudy::printReferences(
-        "study/opengl-api-project-practice-plan.md",
-        "studyNote/opengl-api-project-practice.md",
+        "openGL_Study/01-opengl-study-plan.md",
+        "openGL_Study/02-opengl-study-notes.md",
         {
             "src/comp/graphic/HJOGCommon.cpp",
             "src/comp/graphic/HJOGShaderProgram.cpp",
