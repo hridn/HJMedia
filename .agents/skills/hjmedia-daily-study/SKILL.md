@@ -39,9 +39,10 @@ When the user asks to "完成", "补齐", "生成", "加注释", or otherwise re
    - keep production HJMedia source untouched unless explicitly requested.
 6. For every newly written or substantially updated demo, add Chinese comments that explain the learning point, key control/data flow, and the corresponding HJMedia source semantics.
 7. For every newly written or substantially updated note, add Mermaid diagrams for both data flow and control flow.
-8. For every newly written or substantially updated note, include a `## 问题解答` section that records the user's study questions and the answers given during the session.
+8. For every newly written or substantially updated note, include a `## 问题解答` section that records the user's study questions and the answers given during the session; when answering follow-up questions for an existing day, update that day's note before the final response.
 9. Build and run the day demo when practical. If `cmake` is not on PATH, try `C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe`.
 10. Finish with changed files, verification result, and a concise interview-ready explanation.
+11. After finishing edits, add every file modified by this skill to VCS with `git add <path>...`; scope this to the files changed in the current study task and do not stage unrelated existing changes.
 
 ## Mermaid Diagram Requirements
 
@@ -76,9 +77,12 @@ Every daily note created or substantially updated by this skill must include a `
 
 - Use this section to record the user's questions asked during the learning session and the answers given by Codex.
 - Add new Q&A entries incrementally when the user asks follow-up questions about the day's topic.
+- For follow-up questions about an existing day, read the current day note before answering, then append or update the answer inside the existing `## 问题解答` section.
+- If the full explanation is added elsewhere in the note, still add a concise Q&A entry under `## 问题解答` that points to the detailed section.
 - Keep each question as a concrete heading, such as `### FLV 如何区分音频帧和视频帧？`.
 - Keep answers tied to real HJMedia source paths, classes, functions, diagrams, demos, or terminology when possible.
 - If the note already has a `## 问题解答` section, append or update entries there instead of creating a duplicate section.
+- Before finishing, verify with `rg -n "问题解答|<question keywords>" studyNote/<day-note>.md` or an equivalent check that the Q&A entry exists under `## 问题解答`.
 - If no question has been asked yet, still create the section with a short placeholder such as `本节用于记录学习过程中的提问和回答。`.
 
 ## Finished Artifact Checklist
