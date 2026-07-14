@@ -17,6 +17,45 @@ Follow this sequence for every day:
 
 When the user asks to "完成", "补齐", "生成", "加注释", or otherwise requests an implementation outcome, directly edit the demo/note files. Do not stop at a plan unless the user explicitly asks only for planning.
 
+## Source-Evidence Contract
+
+Treat source code as the authority for every architecture, data-flow, control-flow, lifecycle, and behavior claim in a study note. Documentation, names, and general multimedia knowledge may help locate code, but must not establish a conclusion on their own.
+
+Before writing a conclusion or diagram:
+
+1. Locate the implementation with `rg`, then read the relevant function/class body and its caller or graph connection. Do not infer a call, edge, default, thread, or ownership rule from a filename, class name, comment, or declaration alone.
+2. Record evidence as `path + symbol` and include a line number when it makes review easier. For a cross-layer statement, trace every required boundary (for example TS/NAPI -> entry -> graph -> component), not just one endpoint.
+3. Classify statements precisely:
+   - **源码确认**: directly shown by executable code or an active graph connection.
+   - **条件路径**: shown only behind a platform macro, feature switch, disabled node, configuration, or error branch; state the condition.
+   - **待验证**: plausible but not traced; do not put it in the main flow or phrase it as fact. State the missing source evidence and the next file/symbol to inspect.
+4. If the evidence cannot be found, say “源码未确认” rather than completing the story from domain knowledge. Ask the user for missing context only when that prevents useful source inspection.
+
+## Evidence-First Notes and Diagrams
+
+For every new or substantially changed technical explanation, add a compact `## 源码依据` section (or update the existing one) before the conclusion. Use a table or bullets that map each important claim to its evidence:
+
+```markdown
+## 源码依据
+
+- `src/path/File.cpp` — `Class::method`: establishes <specific observed behavior>.
+- `src/path/Graph.cpp` — `connectCom(A, B)`: establishes the A -> B edge under <condition>.
+```
+
+Apply these rules to Mermaid diagrams:
+
+- Derive every node and primary edge from a concrete call such as `connect`, `connectCom`, `deliver`, `pop`, `process`, callback registration/invocation, or a verified data member handoff.
+- Label optional/conditional edges with the actual macro, configuration key, enable flag, or API condition. Never present a disabled or platform-specific path as the universal default.
+- Separate side channels (callbacks, metadata, PBO readback, control messages) from the media-frame path. Do not draw a result as if it rewrites a frame unless code performs that write.
+- Keep a source path or symbol in each important node label, caption, or adjacent evidence list so a reviewer can audit the graph without guessing.
+- Do not invent ordering from visual layout. State ordering only when a call chain, graph connection order, scheduler rule, or synchronization primitive proves it.
+
+Use the following wording discipline in notes and final answers:
+
+- Write “源码显示/确认” only with recorded evidence.
+- Write “在默认图中” only after reading the graph construction code and its enable/configuration values.
+- Write “可能/待验证” for an incomplete trace, and omit it from interview-ready conclusions unless the uncertainty itself is relevant.
+
 ## Select The Day
 
 - If the user names a day, use that day.
@@ -27,7 +66,7 @@ When the user asks to "完成", "补齐", "生成", "加注释", or otherwise re
 ## Daily Workflow
 
 1. Read the selected day from `references/28-day-plan.md`.
-2. Read only the repository files needed for the day. Prefer `rg` for discovery.
+2. Read only the repository files needed for the day. Prefer `rg` for discovery; for every important claim, read both the defining implementation and enough caller/connection code to establish how it is reached.
 3. Briefly tell the user the day goal and what you are inspecting.
 4. Create or update the expected artifacts:
    - demos under `studyDemo/dayXX_*.cpp`;
@@ -38,11 +77,12 @@ When the user asks to "完成", "补齐", "生成", "加注释", or otherwise re
    - use `study_demo_common.h` when it fits;
    - keep production HJMedia source untouched unless explicitly requested.
 6. For every newly written or substantially updated demo, add Chinese comments that explain the learning point, key control/data flow, and the corresponding HJMedia source semantics.
-7. For every newly written or substantially updated note, add Mermaid diagrams for both data flow and control flow.
+7. For every newly written or substantially updated note, add Mermaid diagrams for both data flow and control flow, derived from recorded source evidence. Mark conditional edges and preserve frame paths versus metadata/control paths.
 8. For every newly written or substantially updated note, include a `## 问题解答` section that records the user's study questions and the answers given during the session; when answering follow-up questions for an existing day, update that day's note before the final response.
-9. Build and run the day demo when practical. If `cmake` is not on PATH, try `C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe`.
-10. Finish with changed files, verification result, and a concise interview-ready explanation.
-11. After finishing edits, add every file modified by this skill to VCS with `git add <path>...`; scope this to the files changed in the current study task and do not stage unrelated existing changes.
+9. Before finalizing, audit the note: every key claim and every primary Mermaid edge must have a source path and symbol in `源码依据` or immediately adjacent text. Use `rg -n` to re-open the cited symbols; remove or relabel unsupported claims.
+10. Build and run the day demo when practical. If `cmake` is not on PATH, try `C:\Program Files\JetBrains\CLion 2026.1.2\bin\cmake\win\x64\bin\cmake.exe`.
+11. Finish with changed files, verification result, the source evidence reviewed, and a concise interview-ready explanation that contains no unverified claim.
+12. After finishing edits, add every file modified by this skill to VCS with `git add <path>...`; scope this to the files changed in the current study task and do not stage unrelated existing changes.
 
 ## Mermaid Diagram Requirements
 
@@ -66,6 +106,8 @@ sequenceDiagram
 
 - The data-flow diagram must show real HJMedia data movement: frames, packets, queues, plugins, nodes, graph stages, muxer paths, or source/sink paths.
 - The control-flow diagram must show real HJMedia control movement: API calls, lifecycle calls, init/start/process/stop/release, seek/flush/EOF, scheduler/handler dispatch, callbacks, locks, state transitions, or error notification propagation.
+- Cite the source path and symbol that proves each diagram's primary path in the note's `源码依据`; inspect `connect`/`connectCom` or the actual callback/data handoff before drawing an edge.
+- Draw optional, disabled, platform-gated, and configuration-gated paths as explicitly conditional. Do not convert a source comment into a runtime fact without checking the surrounding active code.
 - Prefer `flowchart LR` or `flowchart TD` for pipeline/data movement, `sequenceDiagram` for API/callback/thread interactions, and `stateDiagram-v2` for lifecycle/state-machine topics.
 - Use concrete source names in node labels, such as `HJGraphPusher::internalInit`, `HJPluginAVInterleave::runTask`, `HJMediaNode::flush`, or `HJPusherNapi::openPusher`. Avoid vague labels like "module A" or "process".
 - Keep diagrams small enough to review in Markdown. If a day has a broken/fixed debugging scenario, include the fixed path in the main diagram and mention the broken path in labels or notes.
@@ -120,6 +162,9 @@ Prefer a small broken/fixed simulation. Day 13 is the canonical pattern: `studyD
 
 ## Quality Rules
 
+- Do not write a technical claim without source evidence. Never fill an unknown implementation detail with a likely framework convention.
+- Treat comments as supporting context only; executable code and active graph construction decide the documented behavior when they differ.
+- Preserve uncertainty: distinguish source-confirmed behavior, conditional paths, and unverified hypotheses in both prose and diagrams.
 - Keep scope to the selected day.
 - Tie every concept to a real HJMedia path, class, function, graph, plugin, or demo.
 - Use small concrete examples before framework-wide explanation.
