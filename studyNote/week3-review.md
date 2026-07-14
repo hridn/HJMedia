@@ -354,6 +354,82 @@ cmake --build studyDemo/build --target day21_pusher_review
 
 不要按天背笔记，而要串成一条工程链路：产品 API 进入 `HJNAPILiveStream`，`HJGraphPusher` 组装音视频编码和 RTMP 出口，`HJPluginAVInterleave` 按 DTS 合并 packet，`HJRTMPPacketManager` 处理 FLV tag 队列、丢帧和码率建议，RTE/AI 则位于视频进入编码器前后的 GPU/控制数据侧链。复盘材料落在 `studyNote/week3-review.md` 和 `studyDemo/day21_pusher_review.cpp`。
 
+### HJMedia 如何完成人脸检测并让 RTE/Faceu 使用 faceInfo？
+
+这个仓库要分清“**Harmony 示例实际使用的链路**”和“**C++ 推理模块提供的通用能力**”。对前者，答案是：**是的，检测器拿到的帧来自 RTE；准确说是从 RTE 的 `video2D` FBO 经过 PBO 回读到 CPU 内存后取得。** 对后者，答案是否定的：`HJFaceDetectWrapper::detect` 可以直接接收 NV12/RGB，并不依赖 RTE。
+
+Harmony 示例在 `HJPusherDemo.ets` 注册了 `nativeSourceOpen(true)` 和 `nativeSourceAcquire()`。`true` 会使 `HJEntryBaseRender::openNativeSource` 调用 `HJRteGraphProc::openPBO`；默认 RTE 图中的 `HJRteComDrawPBOFBODetect` 本来是禁用的，开启后它连接在 `video2D -> detectPBO`，由 `HJPBOReadWrapper` 将 FBO 读回。回调把 RGBA 数据交给 `HJBaseGPUToRAM`，`acquireNativeSource()` 再把这帧提供给 ArkTS。
+
+ArkTS 的 `HJFaceDetectMgr::priDetect` 从 `nativeSourceAcquire()` 取到 `ArrayBuffer`，构建 RGBA `PixelMap`，再调用 `HJFaceDetect::detect`。这个示例实际调用的是 `@kit.CoreVisionKit` 的 `faceDetector.detect`，不是 `src/detect` 中的 NCNN/TNN C++ 检测器。检测回调会按源尺寸还原点位、JSON 序列化为 `faceInfo`，调用 `hjPusher.setFaceInfo(HJNodeClass_SourceBridge, ...)` 回传 C++。随后 `HJEntryBaseRender -> HJRteGraphProc` 缓存并平滑点位，Faceu 从同一 `sourceName` 读取它并绘制。
+
+因此，RTE 在这条示例链路中既是**检测帧的 GPU 取帧点**，也是 `faceInfo` 的**消费端**；但它不运行检测模型。并且检测帧取自默认图的 `video2D`，该分支位于 `customFilter`、`blur` 和 Faceu 覆盖之前，所以检测器看到的是拷贝后的原始输入画面，而不是已经叠加萌颜效果的最终输出。
+
+`src/entry/inference/HJFaceDetectExport.cpp` 则展示了另一种集成方式：调用方直接向 `HJFaceDetectWrapper::detect` 提供 NV12/RGB 的 `HJUnifyWrapperData`，由 `HJBaseFaceDetect` 预处理并交给 NCNN RetinaFace/SCRFD 等后端，得到框和五点后再由调用方送入 RTE。这是框架能力，当前 Harmony 示例并没有走这条 C++ 模型路径。
+
+关键约束：回传 `faceInfo` 的 `sourceName` 必须与 Faceu 的 `ParamFaceInfoSource` 一致；坐标宽高必须是检测帧的源尺寸。`HJRteGraphProc` 会平滑并缓存结果，超出 1000ms 的旧结果会被清理，避免特效停在旧位置。
+
+#### 完整数据流图
+
+```mermaid
+flowchart TD
+    Camera[相机或视频源] --> RTEVideo2D[RTE video2D FBO]
+    RTEVideo2D --> DetectPBO[HJRteComDrawPBOFBODetect<br/>nativeSourceOpen true 后启用]
+    DetectPBO --> Readback[HJPBOReadWrapper<br/>GPU FBO 回读 RGBA]
+    Readback --> Queue[HJBaseGPUToRAM]
+    Queue --> NativeAcquire[HJPusher nativeSourceAcquire]
+    NativeAcquire --> Mgr[HJFaceDetectMgr::priDetect]
+    Mgr --> PixelMap[RGBA ArrayBuffer 转 PixelMap]
+    PixelMap --> Vision[HJFaceDetect::detect<br/>CoreVisionKit faceDetector.detect]
+    Vision --> Points[人脸框和关键点]
+    Points --> Restore[按 sourceWidth/sourceHeight 还原坐标]
+    Restore --> FaceInfo[JSON 序列化 faceInfo]
+    FaceInfo --> Set[hjPusher.setFaceInfo<br/>HJNodeClass_SourceBridge]
+    Set --> Cache[HJEntryBaseRender -> HJRteGraphProc<br/>m_faceInfoBySource]
+    Cache --> FaceAcquire[Faceu MoreFacePointAcquireFunc]
+    FaceAcquire --> Parse[反序列化 HJMoreFacePointsReal]
+    Parse --> Valid{在 1000ms 有效期内}
+    Valid -->|否| Clear[clearFaceInfo<br/>本帧不绘制 Faceu]
+    Valid -->|是| Update[HJRteComSourceFaceu::update]
+    Update --> Draw[priDraw<br/>检查点位与渲染尺寸]
+    Draw --> Transform[HJFaceuInfo::draw<br/>眼距缩放 双眼旋转 鼻嘴锚点]
+    Transform --> FBO[Faceu 效果纹理写入 FBO]
+    FBO --> Output[RTE 后续滤镜 UI 或 Encoder]
+
+    Direct[另一条通用 C++ 路径：NV12/RGB] -.直接输入.-> Wrapper[HJFaceDetectWrapper::detect]
+    Wrapper -.NCNN/TNN 等后端结果由调用方回传.-> Set
+```
+
+### RTE 从相机纹理到编码器时依次做了什么？人脸检测如何参与？
+
+以下是 `HJRteGraphProcPlaceHolderDefault` 的**默认图**，开关关闭的节点会跳过相应效果，因此它描述的是拓扑顺序，不代表每帧都会执行全部效果。
+
+1. **相机纹理进入 SourceBridge。** HarmonyOS 使用 `HJRteComSourceBridge`；它通过 `HJOGRenderWindowBridge::update()` 更新相机/窗口桥提供的 OES 纹理。这个阶段是 GPU 纹理，不是 CPU 的 NV12/RGB 帧。
+2. **OES 规范化为 2D FBO。** `HJRteComDrawCopyOESFBO` 将 SourceBridge 的 OES 纹理以 Copy shader 绘制到 `video2D` FBO。若输入本来就是 `HJRteComSourceBridgeMediaData` 的 2D 纹理，则改用 `HJRteComDrawCopy2DFBO`。后续处理均以 `video2D` 为基准。
+3. **检测是从 `video2D` 分叉的旁路。** `HJRteComDrawPBOFBODetect` 连接为 `video2D -> detectPBO`，默认关闭；`nativeSourceOpen(true)` 后才启用。它把该 FBO 经 PBO 异步回读成 RGBA 到 CPU，由 ArkTS 的 CoreVisionKit 检测。该支路不把像素写回主纹理链，检测结果只以 `faceInfo` 回来。
+4. **主画面滤镜链。** 另一分支为 `video2D -> customFilter -> blur`：自定义滤镜由 `useCustomFilter` 决定是否启用，级联模糊默认也关闭。它们各自把输入纹理画入目标 FBO，产生下一阶段纹理。
+5. **Faceu 是叠加层，不是对检测纹理的回写。** 检测回调经 `setFaceInfo` 写入 `HJRteGraphProc` 缓存；Faceu 读取同 `sourceName` 的点位，若尺寸匹配且未超过 1000ms，就在自己的动态 FBO 中用 `HJFaceuInfo::draw` 生成贴纸/萌颜纹理。默认图把 `blur` 以预乘 Copy shader 画到目标，再把 Faceu 纹理以普通 Copy shader 画到同一目标，因此 Faceu 覆盖在主画面之上。
+6. **显示和编码复用同一合成顺序。** `blur` 与 Faceu 都分别连接到 UI target 和 `HJRteComDrawEGLEncoder`。后者绑定推流器提供的 EGL 编码 Surface，并在 `HJRteComDrawEGL::render` 中将每个输入纹理绘制到该 Surface；硬编码器随后消费 Surface 中的最终合成画面。
+
+```mermaid
+flowchart LR
+    Camera[相机 Surface/OES 纹理] --> Source[HJRteComSourceBridge]
+    Source --> Copy[HJRteComDrawCopyOESFBO<br/>OES 转 video2D 2D FBO]
+    Copy --> PBO[HJRteComDrawPBOFBODetect<br/>可选检测旁路]
+    PBO --> CPU[PBO 回读 RGBA 到 CPU]
+    CPU --> Detect[ArkTS CoreVisionKit 检测]
+    Detect --> Info[faceInfo]
+    Info --> Cache[HJRteGraphProc 缓存/平滑]
+    Cache --> Faceu[HJRteComSourceFaceu<br/>生成动态 FBO 叠加层]
+
+    Copy --> Custom[HJRteComCustomSourceFilter<br/>可选]
+    Custom --> Blur[HJRteComDrawBlurCascadeFBO<br/>可选]
+    Blur --> UI[HJRteComDrawEGLUI_0]
+    Faceu --> UI
+    Blur --> Encoder[HJRteComDrawEGLEncoder<br/>EGL 编码 Surface]
+    Faceu --> Encoder
+    Encoder --> HW[硬编码器]
+```
+
 ## 实践结果
 
 本日新增/更新：
