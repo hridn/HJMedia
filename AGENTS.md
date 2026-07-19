@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 本文档用于指导 Codex（Codex.ai/code）在本仓库中工作。
 
@@ -339,3 +339,9 @@ int init() {
 - **生命周期**：Plugin 的 init → start → process → stop → release 状态机由 Graph 层驱动，不要在未 ready 时调用 process。
 - **平台宏**：代码中大量使用 `#ifdef` 平台宏（`WIN32_LIB`、`Harmony_LIB` 等），修改跨平台逻辑时需考虑所有平台。
 - **HJ_ 前缀**：所有宏、类型、函数都以 `HJ` 为前缀，不要引入无前缀的公共符号。
+ 
+ ## 面试会话上下文
+ 
+ 本仓库正在持续进行 HJMedia 模拟面试。面试目标、进度和题目记录见 `.agents/interview-context.md` 和 `interview/hjmedia-mock-interview.md`。
+ 
+ 每次新会话启动时，请先读取这两个文件恢复面试上下文。
