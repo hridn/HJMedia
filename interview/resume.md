@@ -25,34 +25,32 @@
 ## 项目经历
 项目 华为主题 2024年9月 - 2025年5月
 技术栈：ArkTS、ArkUI、组件状态管理、UI Ability生命周期管理、RDB关系性数据库、Zip等
-主要负责华为主题资源下载与应用的维护与迭代，稳定性问题分析核心工作如下：
-- 使用 ArkUI 完成下载/应用按钮的绘制与状态管理（待下载、下载中、暂停、已下载可应用、应用中），按钮状态随下载进度和结果自动切换
-- 使用 RDB 关系型数据库 实现下载信息的持久化，支持下载状态的本地存储与恢复，配合 HMS file-download SDK 实现断点续传能力
-- 使用 长时任务（backgroundTaskManager）+ 通知栏（notificationManager）实现后台下载保活和进度展示，用户在通知栏可实 时感知下载进度
-- 下载完成后通过 解密（Lite DRM）→ 解压（Zip）流水线将 DRM 加密资源处理为可应用格式，写入共享目录供主题引擎读取
-- 使用 emitter 事件总线 广播下载完成事件，解耦下载模块与业务模块，同时通过 全链路打点上报 覆盖下载各阶段，支撑质量监控与问题排查
-- 负责华为主题稳定性问题看护，日常使用DevEco Testing进行稳定性压力测试做到提前发现问题，提前解决问题。分析并定位内存泄露、js Crash、Cpp Crash等稳定性问题
+负责华为主题资源下载模块的迭代与稳定性治理，核心工作如下：
+- 使用 ArkUI 实现下载、暂停、应用等状态管理，并基于 RDB 持久化下载记录；结合 HMS file-download SDK 支持断点续传与状态恢复
+- 通过 backgroundTaskManager 与 notificationManager 实现后台下载保活和通知栏进度展示；完成 Lite DRM 解密、Zip 解压及资源落盘流程
+- 使用 emitter 解耦下载完成事件与业务模块，结合全链路打点支持质量监控与问题排查
+- 使用 DevEco Testing 开展稳定性测试，定位和分析内存泄漏、ArkTS Crash 及 C++ Crash 问题
 
 项目 花椒直播鸿蒙版。 2025年6月 - 2026年1月
 技术栈：ArkTS、ArkUI、组件状态管理、UI Ability生命周期管理、XComponent、cameraService、agora等。
-主要负责花椒直播开播间、看播间、语音房模块的开发，核心工作如下：
-- 完成开播模块的设计与实现。主要使用XComponent承载预览画面，使用ArkUI进行页面的绘制以及状态的管理、封装cameraService管理相机的生命周期、并接入agora实现RTC连麦功能。
-- 通过监听Swiper的滑动实现看播间上下滑动实现播放器预加载的功能，优化用户观看直播的体验。
-- 重构看播间模块：封装CDN播放组件与RTC播放组件，新实现MainMediaComponent作为看播间播放器组件。使得业务与播放解耦，通过监听服务端消息从而实现直播布局的动态切换。提高了代码的健壮性与可维护性。
-- 完成了语音房开播模块的设计与实现，并优化了agoraService，方便语音房和看播间复用，并复用MainMediaComponent播放组件，实现了语音房视频连麦的功能。
-- 使用Snapshot工具抓取堆快照分析出看播间模块存在ArkTS侧和native侧内存泄露的问题，定位出组件间存在循环引用的问题导致ArkTS侧的对象内存无法释放，定位出native侧存在创建nativeWindow但未及时回收导致内存泄漏。
+负责开播间、看播间和语音房核心模块开发，核心工作如下：
+- 使用 ArkUI 与 XComponent 实现开播预览，封装 CameraService 管理相机生命周期，并接入 Agora 实现 RTC 连麦
+- 基于 Swiper 滑动触发播放器预加载，优化上下滑看播体验；封装 CDN/RTC 播放组件，以 MainMediaComponent 解耦业务与播放，并支持直播布局动态切换
+- 完成语音房开播及视频连麦能力，优化 AgoraService 并复用播放器组件，降低看播间与语音房的重复实现
+- 通过 Snapshot 堆快照定位 ArkTS 循环引用和 NativeWindow 未及时回收导致的内存泄漏
 
 项目 HJMedia 自研媒体 SDK  2026年2月 - 2026年4月  
 技术栈：C++、CMake、HarmonyOS、NAPI、ArkTS、RTMP、FFmpeg/OpenGL
-主要负责 HJMedia 自研媒体 SDK 的 HarmonyOS 适配、业务接入与稳定性问题分析，覆盖直播推流、播放及渲染相关链路，核心工作如下：
-- 梳理并参与 HJMedia 鸿蒙端媒体能力接入，基于 NAPI 完成 ArkTS 与 C++ SDK 的桥接，封装上下文初始化、推流/播放器创建销毁、预览窗口绑定及播放控制等接口，保障业务层能够稳定调用 Native 媒体能力
-- 配合 HarmonyOS 平台适配 XComponent/NativeWindow 渲染通路，处理窗口生命周期与 Native 资源释放时序，降低页面切换、开关播等场景下的黑屏、渲染异常及资源泄漏风险
-- 实现基于 OpenGL ES 的镜像 FBO 插件：将输入视频纹理渲染至离屏帧缓冲对象（FBO），通过纹理坐标变换完成水平镜像，并将输出纹理无缝交给下游渲染/编码节点，满足预览与推流画面的镜像处理需求
-- 实现贴纸渲染插件：在 GPU 渲染管线中加载并管理贴纸纹理，将贴纸与视频帧绘制至同一 FBO，完成透明混合、位置与缩放等纹理变换；以独立插件方式接入媒体图，便于后续扩展更多视觉特效
+负责 HJMedia SDK 的 HarmonyOS 适配、业务接入及渲染插件开发，核心工作如下：
+- 基于 NAPI 桥接 ArkTS 与 C++ SDK，封装上下文、推流/播放器生命周期、预览窗口绑定及播放控制等媒体能力
+- 适配 XComponent/NativeWindow 渲染通路，处理窗口生命周期与 Native 资源释放时序，降低开关播、页面切换中的渲染异常和泄漏风险
+- 实现 OpenGL ES 镜像 FBO 插件，通过纹理坐标变换输出镜像视频纹理；实现贴纸插件，完成纹理加载、FBO 合成、透明混合及位置缩放，并以独立插件方式接入媒体图
 
 ## 技术栈
 
-- 编程语言：
-- 框架与库：
-- 工具与平台：
-- 数据库与中间件：
+- 编程语言：C++、ArkTS；具备 C++ Native 与 ArkTS 应用层协同开发经验
+- 框架与库：ArkUI、HarmonyOS NAPI、XComponent、OpenGL ES、FFmpeg、Agora RTC、HMS file-download SDK
+- 音视频与图形：了解 RTMP 推流、H.264/H.265 与 AAC 编解码、音视频复用及播放链路；能够使用 OpenGL ES、纹理、Shader 与 FBO 实现镜像、贴纸等实时视频特效
+- 工具与平台：HarmonyOS、DevEco Studio、DevEco Testing、CMake、Git；熟悉 UIAbility、CameraService、NativeWindow 等 HarmonyOS 平台能力
+- AI 工程化与开发流程：熟练使用 Codex、Cloud Code 等 AI 编码工具；具备 Skill 制作与复用能力，实践 SDD/OpenSpec 驱动需求、设计、开发与验证闭环
+- 数据库与通信：RDB 关系型数据库、emitter 事件总线、backgroundTaskManager、notificationManager；了解 Lite DRM 解密与 Zip 解压资源处理流程
