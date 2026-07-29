@@ -39,15 +39,13 @@
 
 项目 HJMedia 自研媒体 SDK  2026年2月 - 2026年4月
 负责 HJMedia 自研 C++ 媒体 SDK 的 HarmonyOS 适配、业务接入与渲染插件开发，核心工作如下：
-- 完成推流与播放器的 NAPI 桥接及鸿蒙端封装，打通 ArkTS 业务层与 C++ 媒体引擎；基于媒体图完成音频采集、重采样、AAC 编码、音视频交织、RTMP 推流及播放控制等核心链路接入，支撑直播端稳定开播与看播
-- 负责 XComponent/NativeWindow 与 C++ 渲染图的 Surface 生命周期协同，处理窗口创建、尺寸变更与销毁时的渲染目标绑定和资源释放，解决开关播、页面切换场景的渲染异常与 Native 资源泄漏风险
-- 基于 OpenGL ES 设计并实现镜像 FBO、贴纸渲染插件，完成纹理坐标变换、离屏合成、Alpha 混合和位置缩放，并以可插拔节点方式接入媒体图，扩展 SDK 的实时视频特效能力
+- 完成推流与播放器的 NAPI 桥接，接入 RTMP 推流、音视频编码与播放等核心能力，支撑鸿蒙端稳定开播和看播
+- 负责 XComponent/NativeWindow 渲染与资源生命周期管理，解决开关播、页面切换中的渲染异常和 Native 资源泄漏风险
+- 基于 OpenGL ES/FBO 实现镜像和贴纸特效插件，并以可插拔方式接入媒体图，扩展直播实时视频特效能力
 
 ## 技术栈
-
-- 编程语言：C++、ArkTS；具备 C++ Native 与 ArkTS 应用层协同开发经验
-- 框架与库：ArkUI、HarmonyOS NAPI、XComponent、OpenGL ES、FFmpeg、Agora RTC、HMS file-download SDK
-- 音视频与图形：了解 RTMP 推流、H.264/H.265 与 AAC 编解码、音视频复用及播放链路；能够使用 OpenGL ES、纹理、Shader 与 FBO 实现镜像、贴纸等实时视频特效
-- 工具与平台：HarmonyOS、DevEco Studio、DevEco Testing、CMake、Git；熟悉 UIAbility、CameraService、NativeWindow 等 HarmonyOS 平台能力
-- AI 工程化与开发流程：熟练使用 Codex、Cloud Code 等 AI 编码工具；具备 Skill 制作与复用能力，实践 SDD/OpenSpec 驱动需求、设计、开发与验证闭环
-- 数据库与通信：RDB 关系型数据库、emitter 事件总线、backgroundTaskManager、notificationManager；了解 Lite DRM 解密与 Zip 解压资源处理流程
+- 编程语言：C++、ArkTS、TypeScript
+- 音视频：OpenGL ES、RTMP、H.264/H.265、AAC、FFmpeg等
+- 鸿蒙：Stage 模型、ArkUI、UIAbility、MVVM、NAPI、Profile、XComponent、hap包，生命周期管理、TRTC、Zego、Agora等。
+- 工程与工具：CMake、Git、DevEco Studio、DevEco Testing等。
+- AI 工程化：Codex、Cloud Code、Skill、SDD、OpenSpec
