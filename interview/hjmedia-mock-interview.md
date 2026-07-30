@@ -22,15 +22,7 @@
 
 **参考答案：**
 
-一次 RTMP 推流可概括为以下链路：
-
-1. **采集**：摄像头采集原始视频帧，麦克风采集原始 PCM 音频帧。
-2. **可选前处理**：视频可经过人脸检测、Faceu、Prio 或 RTE 等处理；音频可进行重采样、声道/采样格式转换、音量或特效处理，使输入满足编码器要求。
-3. **编码**：视频编码器把原始视频帧压缩为 H.264/H.265 等编码包；音频编码器将 PCM 压缩为 AAC 等编码包。
-4. **复用与交织**：Muxer 按时间戳将音视频编码包交织，封装为适合 RTMP 传输的 FLV Tag/消息，维持正确的 A/V 时间顺序。
-5. **网络发送**：RTMP 输出模块完成握手、连接、发布流，并将封装后的音视频消息发送到流媒体服务器。
-
-在 HJMedia 中，`HJGraphPusher` 负责根据推流场景创建并连接采集、处理、编码、封装和网络输出等节点，统一管理初始化、启动、停止和生命周期。每个 Node 则只处理一个明确阶段，并通过 `connect(A, B, capacity)` 建立数据边。帧缓冲由消费者 B 管理；上游 Node 投递前检查下游是否已满，从而形成反压。节点由调度器异步执行，按 DriveType 在生产或消费后继续唤醒相邻节点，最终将整条链路组织成可并发运行的媒体处理图。
+花椒在 HarmonyOS 上的推流分为音视频两条链路：视频侧，`HJOGRenderWindowBridge` 创建 **OES 纹理**并将其与 `OH_NativeImage` 绑定，再把 `SurfaceId` 交给相机；相机写入 `Surface` 后，通过 `OH_NativeImage_UpdateSurfaceImage()` 将最新画面关联到 OES 纹理，RTE 中的 `HJRteComDrawCopyOESFBO` 再把它转换成 **RGBA 2D 纹理**。灰度、模糊、镜像和 Faceu 等可选效果继续处理 2D 纹理，最终由 `TargetEncoder` 将纹理绘制到编码器 Surface，经硬编码得到 **Annex B 格式的 H.264/H.265 ES**。音频侧，麦克风采集 **S16LE PCM**，经过 `HJPluginAudioResampler` 转换格式并按 1024 个采样点组帧，再由 `HJPluginFDKAACEncoder` 编码成 **AAC ES**。最后，`HJPluginAVInterleave` 按 DTS 交织音视频编码包，`HJPluginRTMPMuxer` 通过 `HJESParser` 将 Annex B 起始码转换为 4 字节 NAL 长度前缀（H.264 为 AVCC 格式，H.265 同样使用长度前缀），再封装成 **FLV Tag**并通过 librtmp 发送到服务器；RTE Graph 负责视频纹理处理，`HJGraphPusher` 负责音视频编码、交织、发送和生命周期管理。
 
 ---
 
@@ -284,3 +276,102 @@ Plugin 的生命周期可按职责理解：
 - **时间戳（PTS）**：重采样后要按输出采样率重新连续地计算 PTS，保证音频播放时长与视频同步。
 
 因此典型流程是：麦克风 PCM → 重采样/声道与采样格式转换 → FIFO 对齐 AAC 所需帧大小 → AAC 编码 → 复用为 RTMP/FLV 音频消息。
+
+---
+
+## 第 12 题
+
+**问题：** 在 HJMedia 的 RTE 渲染图中，RTE 与相机、图片这两类输入源的职责边界是如何划分的？它们分别以什么数据形式进入 RTE，进入图后又如何被统一处理？
+
+**参考答案：**
+
+相机侧的边界是 `Surface`：RTE 通过 `HJOGRenderWindowBridge` 创建 `OH_NativeImage` 和 OES 纹理，并把 `SurfaceId` 交给相机；相机只负责向 Surface 写入画面，RTE 调用 `OH_NativeImage_UpdateSurfaceImage()` 更新并取得最新的 OES 纹理。图片侧的边界是图片路径：`HJRteComSourceImage` 负责读取图片，并将其上传为静态的 2D 纹理。
+
+两类输入进入 RTE 后都会被统一封装成 `HJRteDriftInfo`，其中包含 `textureId`、`textureType`、宽高和纹理矩阵。后续节点不再关心纹理来自相机还是图片，只根据这些信息完成格式适配、FBO 处理、层级合成，并输出到预览窗口或编码器。两者的主要区别是：相机提供逐帧更新的 OES 纹理，通常要先转成 2D 纹理；图片提供可重复使用的静态 2D 纹理。
+
+---
+
+## 第 13 题
+
+**问题：** HJMedia 是如何实现视频超分的？超分会增加 GPU、CPU 和内存开销，项目中采用了哪些方式控制这些额外开销？
+
+**参考答案：**
+
+HJMedia 提供了两类超分实现。实时渲染链主要使用 `HJRteComDrawSRFilter`：输入的 2D 纹理先经过 EASU Shader 做边缘自适应放大，写入中间 FBO；再经过 RCAS Shader 做对比度自适应锐化，输出新的 2D 纹理；如果开启 `enableExtraSharpen`，还会增加一次额外锐化。整个过程是 `2D 纹理 → EASU FBO → RCAS → 可选额外锐化 → 输出 FBO`，不需要把图像读回 CPU。项目还提供 `HJBaseVideoSR` 模型超分体系，可以根据平台选择 NCNN RealESRGAN、RealCUGAN、PlainUSR、HarmonyOS MindSpore、iOS CoreML 或 VTFrameProcessor；`HJRteComDrawSRFilter` 则是更适合实时预览和推流的轻量纹理方案。
+
+项目主要通过以下方式控制性能开销：
+
+1. **按需启用和直接旁路**：RTE 配置中的超分节点可以关闭，关闭后 Graph 直接传递上游纹理，不执行超分；Harmony 的配置构造器默认也不会在未指定 `isEnableEnhance` 时开启增强链。
+2. **限制实际处理分辨率**：`HJRteComDrawSRFilter` 优先根据已启用目标节点的画布、viewport 和渲染模式计算真正需要的输出尺寸，避免固定倍数盲目放大；找不到目标尺寸时才使用动态倍率，输入短边达到 1080 时为 1 倍、达到 720 时为 2 倍、更低时为 4 倍。倍率也可以通过参数调整。
+3. **减少数据搬运和重复分配**：纹理超分始终在 GPU 的纹理和 FBO 之间流转，Shader 在 `init` 时创建后重复使用；EASU、RCAS 中间 FBO 在尺寸不变时直接复用，Graph 的输出 FBO 也通过池化机制复用。关闭额外锐化后，每帧只执行 EASU 和 RCAS 两个 pass，不执行第三个锐化 pass。
+4. **优化较重的模型超分**：NCNN 后端可以使用 Vulkan GPU、FP16、Winograd、内存池和可配置线程数；`HJVideoSRWrapper` 可以把推理放到工作线程，并通过 `asyncClear` 清除同 ID 的旧等待任务，只保留最新待处理帧，避免实时视频因超分速度不足而不断积压。正在执行的任务不会被取消。
+5. **缩小模型推理区域**：`HJFaceSRWrapper` 支持先检测并裁剪人脸，只对人脸 ROI 做超分，再把带位置和 Alpha 信息的结果交给后续合成；它也支持在推理前缩放输入尺寸，从而避免每帧都对整幅高分辨率画面运行重模型。
+
+因此，实时场景优先使用 GPU 纹理超分并控制输出尺寸，质量要求更高时再选择模型超分或人脸局部超分。需要注意的是，当前源码提供了开关、倍率和后端选择等能力，但没有看到根据温度、GPU 耗时或实时帧率自动降级的完整策略；这部分仍需要上层结合设备能力和耗时统计决定是否关闭超分、降低倍率或切换轻量方案。
+
+---
+
+## 第 14 题
+
+**问题：** HJMedia 中的人脸检测主要服务于哪些业务功能？开启人脸检测后会给实时推流带来哪些性能和功耗影响，项目又采用了哪些方式控制这些开销？
+
+**参考答案：**
+
+严格来说，人脸检测模型不属于 RTE 的主图像处理链，TNN、NCNN、Vision/CoreML 等检测实现在 `src/detect` 和 `src/entry/inference` 中；RTE 负责从相机画面分出送检数据，并在检测完成后消费返回的人脸信息。以 Harmony 相机链路为例，数据先按 `相机 OES 纹理 → FilterCopyOES → 2D 纹理` 流动，再从 `video2D` 分出一路到默认关闭的 `TargetPBODetect`。开启检测取帧后，该目标通过 PBO 把图像读回 CPU，交给上层推理；检测得到的“是否有人脸、脸框和关键点”再通过 `HJRteGraphProc::setFaceInfo()` 回送给 RTE。
+
+萌颜特效确实是叠加在相机输入流上的，而不是把相机纹理送进人脸模型后由模型输出新画面。`HJRteComSourceFaceu` 根据返回的眼睛、鼻子、嘴部等关键点，让 `HJFaceuInfo` 计算贴纸的位置、旋转和缩放，并生成独立的 2D 特效纹理；RTE 配置将相机处理后的纹理和 Faceu 纹理同时连接到 UI、编码目标，目标节点依次绘制这两层，得到“相机画面 + 萌颜贴纸”的最终画面。除此之外，检测结果还用于人脸保护：没有检测到人脸时打开模糊效果；也可以给 `HJFaceAcquireWrapper/HJFaceSRWrapper` 提供人脸 ROI，只增强人脸区域。这里的人脸检测不是身份识别。
+
+它的主要开销包括取帧、预处理、模型推理和结果消费：如果从 RTE 纹理链取帧，需要经过 FBO 和 PBO 将 GPU 图像读回 CPU；随后还要使用 libyuv 缩放并把 NV12 等格式转换成检测器需要的 RGB，再由 TNN、NCNN、Vision/CoreML 等后端执行人脸框和关键点推理，最后还会进行坐标映射、平滑以及贴纸合成。这些操作会增加 CPU/GPU 占用和内存带宽，持续逐帧运行还会提高功耗和发热；如果检测也使用 GPU，还可能与渲染、萌颜和超分争抢 GPU 时间。检测到的人脸越多，逐脸后处理和贴纸绘制开销也会相应增加。
+
+项目通过几种方式控制开销：检测入口默认关闭并按需打开；检测前会把输入缩放到较小的模型尺寸，NCNN RetinaFace/SCRFD 常用约 320 像素级输入，并支持选择推理后端、GPU 和线程数；异步检测使用 `asyncClear` 清除同一任务 ID 的旧等待帧，只保留较新的待处理帧，避免推理速度跟不上时队列不断积压；纹理读回使用双 PBO 交替提交和映射上一帧，预处理缓冲区也会复用，减少同步等待和重复分配。需要注意的是，双 PBO 不能消除 GPU 到 CPU 的数据搬运，`asyncClear` 也不是固定频率跳帧；当前源码中没有看到完整的温控或按帧率自动降频策略，上层仍应在不需要萌颜、人脸保护或人脸超分时关闭检测，并根据设备性能控制调用频率。
+
+---
+
+## 第 15 题
+
+**问题：** 人脸检测是在 RTE 图像处理链中完成的吗？萌颜特效是如何叠加到相机输入流上的？
+
+**参考答案：**
+
+人脸检测模型不是 RTE 主图像处理链中的滤镜节点。以 Harmony 相机链路为例，相机输出的 OES 纹理先经过 `FilterCopyOES` 转为 2D 纹理；`video2D` 再分出一条送检支路：`2D 纹理 → TargetPBODetect → PBO 读回 CPU → 上层人脸检测 → HJRteGraphProc::setFaceInfo()`。因此，RTE 负责提供送检画面并接收检测结果，真正的 TNN、NCNN 等模型推理位于 `src/detect` 和 `src/entry/inference`。
+
+萌颜采用独立图层合成。`HJRteComSourceFaceu` 读取人脸关键点，通过 `HJFaceuInfo` 计算贴纸的位置、旋转和缩放，生成一张 2D 特效纹理；相机处理后的纹理与 Faceu 特效纹理分别连接到同一个 UI 或编码目标，目标先绘制相机画面，再绘制 Faceu 图层，最终得到“相机画面 + 萌颜贴纸”。`SourceFaceu::dependsOn` 只是让萌颜源关联相机源的尺寸和人脸信息，并不表示相机纹理会先经过 Faceu 节点。
+
+---
+
+## 第 16 题
+
+**问题：** 结合 HJMedia 项目，介绍一下 H.264、H.265、RTMP、AAC、PCM、YUV、RGB 等音视频相关概念，以及它们在推流链路中的关系。
+
+**参考答案：**
+
+这些概念属于不同层次：YUV、RGB 和 PCM 是未压缩的原始数据；H.264、H.265 和 AAC 是压缩编码格式；RTMP 是传输编码后音视频的网络协议。HJMedia 也在 `HJDataType` 中将数据分为 `HJDATA_TYPE_RS`，即 YUV、PCM 等原始流，以及 `HJDATA_TYPE_ES`，即 AVC、HEVC、AAC 等编码流。
+
+视频链路可以概括为：`相机 OES 纹理 → RTE 2D/RGBA 纹理 → 编码器 Surface（NV12 配置）→ H.264/H.265 → FLV Video Tag`。RGB 使用红、绿、蓝表示像素，RGBA 还包含透明度，适合图片、OpenGL 渲染和 AI 处理，但占用的内存和带宽较大；HJMedia 的图片纹理、RTE FBO 和 PBO 读回主要使用 RGB/RGBA。YUV 将亮度 Y 与色度 U、V 分开，便于对色度降采样，常见的 I420 是 Y、U、V 三个平面，NV12 是 Y 平面加交错 UV 平面；8 位 YUV420 平均每像素约 1.5 字节，更适合相机和编解码器。项目通过 `HJVideoConverter`、`HJTransferMediaData` 和 libyuv 在 I420、NV12、RGB、RGBA 之间转换，Harmony 视频编码器配置的像素格式为 `AV_PIXEL_FORMAT_NV12`。
+
+H.264 又叫 AVC，H.265 又叫 HEVC，它们都通过帧内预测、帧间预测、变换、量化和熵编码压缩原始视频。H.264 码流由 NALU 组成，常见的有 SPS、PPS、IDR 和 SEI；H.265 还增加了 VPS。H.265 通常能以更低码率获得接近 H.264 的画质，但编解码复杂度和兼容成本更高。项目通过 `HJPusherVideoInfo::videoCodecId` 选择 H.264 或 H.265，`HJVEncOHCodec` 分别使用 `video/avc` 和 `video/hevc` 创建 Harmony 硬件编码器，并根据分辨率、帧率、码率和 GOP 配置编码。
+
+Annex B 和 AVCC 不是两种编码，而是 H.264/H.265 NALU 的两种组织方式：Annex B 使用 `00 00 01` 或 `00 00 00 01` 起始码分隔 NALU，AVCC 使用四字节长度前缀。`HJESParser::proc_avc_data()` 和 `proc_hevc_data()` 会检查编码帧是否带有起始码：如果是 Annex B，就去掉起始码并为每个 NALU 写入四字节长度；如果已经是长度前缀格式，就直接使用。同时，SPS/PPS 或 VPS/SPS/PPS 会被整理成 `avcC/hvcC` 配置记录，作为 RTMP 视频序列头。
+
+音频链路可以概括为：`麦克风 PCM → 重采样/FIFO → AAC → FLV Audio Tag`。PCM 是未经压缩的音频采样，必须同时说明采样率、声道数、S16/Float 等采样格式以及平面或交错布局。`HJPluginAudioResampler` 负责统一这些参数，FIFO 再将 PCM 整理成编码器需要的固定帧大小。HJMedia 使用 FDK-AAC 将 PCM 编码为 AAC-LC，每帧按 1024 个采样组织；编码器生成的 `AudioSpecificConfig` 被保存为 AAC 配置头。写入 FLV 时，`HJFLVUtils` 先发送 AAC Sequence Header，普通 AAC 数据帧如果带有 ADTS 头，则先去掉 ADTS 再写入 Audio Tag。
+
+RTMP 本身不压缩音视频，它负责建立推流连接并发送音视频消息。在 `HJGraphPusher` 中，视频编码器输出 H.264/H.265，音频编码器输出 AAC，`HJPluginAVInterleave` 比较两路 DTS 并按时间顺序交织，`HJRTMPMuxer` 再构造 FLV Audio/Video Tag，最后由 `HJRTMPWrapper` 通过 librtmp 完成 `RTMP_SetupURL`、连接和 `RTMP_Write`。项目还支持 Enhanced RTMP，用扩展 VideoTag 和 FourCC 承载 HEVC 等编码。因此整体关系就是：RGB/YUV 和 PCM 是被处理的原始数据，H.264/H.265 和 AAC 负责压缩，FLV Tag 负责组织音视频与时间戳，RTMP 负责把这些数据发送到直播服务器。
+
+---
+
+## 第 17 题
+
+**问题：** HJMedia 项目使用了 FFmpeg 的哪些功能？这些功能主要位于音视频链路的哪些环节？
+
+**参考答案：**
+
+FFmpeg 在 HJMedia 中主要作为通用媒体底座使用，而不是包办整条推流链路，具体分为以下几个环节：
+
+1. **媒体数据与时间戳表示**：`HJMediaFrame` 使用 FFmpeg 的 `AVPacket` 表示 H.264、H.265、AAC 等压缩帧，使用 `AVFrame` 表示解码后的 YUV、PCM；`HJMediaInfo` 使用 `AVCodecParameters`、像素格式、采样格式和声道布局保存流信息，并用 `av_rescale_q()`、`av_packet_rescale_ts()` 转换时间基。这些结构贯穿解封装、编解码、转换和封装流程。
+2. **解封装**：`HJFFDemuxer` 通过 libavformat 的 `avformat_open_input()`、`avformat_find_stream_info()`、`av_read_frame()` 和 `avformat_seek_file()` 打开媒体 URL、识别音视频轨、读取压缩包并完成 Seek；`HJPluginFFDemuxer` 被直播播放器、点播播放器和音乐播放器使用。数据变化是：`文件或网络媒体 → AVPacket 压缩帧`。
+3. **编解码**：`HJVDecFFMpeg` 和 `HJADecFFMpeg` 使用 libavcodec 将压缩视频、音频解码为 YUV 和 PCM，是播放器的软件解码后端；`HJVEncFFMpeg` 和 `HJAEncFFMpeg` 也提供通用的软件或 FFmpeg 硬件编码能力，用于框架的编码节点。数据变化是：解码时 `H.264/H.265/AAC AVPacket → YUV/PCM AVFrame`，编码时方向相反。
+4. **格式转换与音频整理**：`HJAudioConverter` 使用 libswresample 统一 PCM 的采样率、采样格式和声道布局，`HJAudioFifo` 使用 `AVAudioFifo` 将 PCM 整理成固定采样数；`HJVideoConverter` 使用 libswscale 完成像素格式、尺寸转换，同时部分 I420、RGBA 转换和旋转由 libyuv 完成。该环节通常位于解码后到渲染前，或采集后到编码前。
+5. **码流解析与格式适配**：`HJBSFParser`、`HJH2645Parser` 使用 FFmpeg Bitstream Filter 和 H.264/H.265 解析能力，处理 `h264_mp4toannexb`、`hevc_mp4toannexb`，并解析 SPS、PPS、VPS、extradata 和 NALU 长度信息，供解码、封装及码流参数识别使用。需要注意，推 RTMP 时的反向适配——把 Annex B NALU 改为长度前缀并生成 `avcC/hvcC`——主要由项目自己的 `HJESParser` 完成。
+6. **封装与本地录制**：`HJFFMuxer` 使用 libavformat 创建输出容器和音视频流，通过 `avformat_write_header()`、`av_interleaved_write_frame()`、`av_write_trailer()` 写入文件或其他 FFmpeg 输出；在 `HJGraphPusher::openRecorder()` 中，编码后的音视频经过交织后连接到 `HJPluginFFMuxer`，用于本地录制。数据变化是：`H.264/H.265/AAC AVPacket → MP4 等封装文件`。
+
+因此，播放主链可以概括为：`媒体 URL → FFmpeg 解封装 → H.264/H.265/AAC AVPacket → FFmpeg 软件解码或平台硬解 → YUV/PCM → 转换 → 渲染`；录制链是：`编码帧 → 交织 → FFmpeg 封装 → 本地文件`。Harmony 推流主链需要单独区分：视频编码使用 `HJPluginVideoOHEncoder`/OH Codec，音频编码使用 `HJPluginFDKAACEncoder`，RTMP 侧由 `HJRTMPMuxer` 构造 FLV Tag、`HJRTMPWrapper` 调用 librtmp 发送，因此“Harmony 推流编码和 RTMP 网络发送”并不是由 FFmpeg 完成的；FFmpeg 在这条链上更多承担数据结构、时间基、格式转换和可选码流解析等基础能力。
