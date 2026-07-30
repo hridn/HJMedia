@@ -375,3 +375,24 @@ FFmpeg 在 HJMedia 中主要作为通用媒体底座使用，而不是包办整�
 6. **封装与本地录制**：`HJFFMuxer` 使用 libavformat 创建输出容器和音视频流，通过 `avformat_write_header()`、`av_interleaved_write_frame()`、`av_write_trailer()` 写入文件或其他 FFmpeg 输出；在 `HJGraphPusher::openRecorder()` 中，编码后的音视频经过交织后连接到 `HJPluginFFMuxer`，用于本地录制。数据变化是：`H.264/H.265/AAC AVPacket → MP4 等封装文件`。
 
 因此，播放主链可以概括为：`媒体 URL → FFmpeg 解封装 → H.264/H.265/AAC AVPacket → FFmpeg 软件解码或平台硬解 → YUV/PCM → 转换 → 渲染`；录制链是：`编码帧 → 交织 → FFmpeg 封装 → 本地文件`。Harmony 推流主链需要单独区分：视频编码使用 `HJPluginVideoOHEncoder`/OH Codec，音频编码使用 `HJPluginFDKAACEncoder`，RTMP 侧由 `HJRTMPMuxer` 构造 FLV Tag、`HJRTMPWrapper` 调用 librtmp 发送，因此“Harmony 推流编码和 RTMP 网络发送”并不是由 FFmpeg 完成的；FFmpeg 在这条链上更多承担数据结构、时间基、格式转换和可选码流解析等基础能力。
+
+---
+
+## 第 18 题
+
+**问题：** 什么是 N-API？HJMedia 项目是如何使用 N-API 打通 HarmonyOS ArkTS 与 C++ 音视频框架的？
+
+**参考答案：**
+
+N-API 是 HarmonyOS 中供 ArkTS/JavaScript 与 C/C++ 原生模块互相调用的一套 C 接口。它本身不负责采集、编解码或渲染，而是解决跨语言的函数导出、参数转换、对象生命周期和异步回调问题；代码中的 `napi_env` 表示当前运行环境，`napi_value` 表示 ArkTS/JS 值，`napi_callback_info` 用于取得一次调用的参数。
+
+HJMedia 中的使用过程可以分为以下几层：
+
+1. **注册原生模块和函数**：`src/entry/pusher/hsys/napi_init.cpp` 与 `src/entry/player/hsys/napi_init.cpp` 创建 `napi_module`，通过构造函数中的 `napi_module_register()` 注册模块；模块初始化时调用 `napi_define_properties()`，把 `n_contextInit`、`n_createPusher`、`n_openPusher`、`n_createPlayer`、`n_openPlayer`、`n_setWindow` 等 C++ 函数导出给 ArkTS。`HJNativeExportCommon` 还统一导出了人脸信息、原生图像源、萌颜以及 RTE 节点创建、连接和参数设置等公共接口。CMake 最终将两套入口分别构建成 `libHJPusher.so` 和 `libHJMediaPlayer.so`，并链接 Harmony 的 `libace_napi.z.so`。
+2. **ArkTS 再封装业务 API**：`HJPusher.ets` 导入 `libHJPusher.so`，`HJPlayer.ets` 导入 `libHJMediaPlayer.so`，再对原生的 `n_*` 函数包装成 `HJPusher`、`HJPlayer` 类。上层页面只需要调用 `createPusher()`、`openPreview()`、`openPusher()` 或 `createPlayer()`、`openPlayer()`，不需要直接接触 N-API。HAR 包的 `Index.ets` 再把这些类和配置类型导出给业务工程。
+3. **完成参数和返回值转换**：大部分复杂配置在 ArkTS 侧先通过 `JSON.stringify()` 变成字符串，`HJPusherNapi`、`HJPlayerNapi` 再使用 `NapiUtil`、`HJYJsonDocument` 和各类配置对象解析为 C++ 结构；`openRecorder()` 等少数接口则直接读取 ArkTS 对象字段。布尔值、整数和字符串使用 `napi_get_value_*()` 读取，返回码使用 `napi_create_int32()` 返回。SurfaceId、播放器时长等 64 位数据使用 `int64` 或 ArkTS `bigint`，音频、SEI 等二进制数据在需要跨层时使用 `ArrayBuffer`。
+4. **管理 C++ 实例生命周期**：`n_createPusher()` 和 `n_createPlayer()` 分别 `new HJPusherBridge`、`new HJPlayerBridge`，再把指针转换成 ArkTS `bigint` 作为不透明句柄；后续调用先从句柄恢复 C++ 指针，最后由 `n_destroyPusher()`、`n_destroyPlayer()` 执行 `delete`。因此 ArkTS 层必须保证 create/destroy 成对，并且销毁后不能继续使用旧句柄。
+5. **进入真正的媒体框架**：以推流为例，调用链为 `ArkTS HJPusher.openPusher() → libHJPusher.so::n_openPusher → HJPusherNapi::openPusher() → HJPusherBridge/HJNAPILiveStream::openPusher() → HJGraphPusher`；预览会进入 `HJEntryBaseRender/HJRteGraphProc`。播放器则是 `ArkTS HJPlayer.openPlayer() → HJPlayerNapi::openPlayer() → HJPlayerBridge/HJNAPIPlayer::openPlayer() → HJGraphPlayer`。因此 N-API 位于产品入口层，负责“翻译和转发”，Graph、Plugin、编解码器才负责真正的媒体处理。
+6. **把 C++ 异步事件安全回调给 ArkTS**：推流状态、播放状态、统计信息、语音数据和 SEI 通常从媒体工作线程产生，不能直接在这些线程调用 JS 函数。项目使用 `ThreadSafeFunctionWrapper` 保存 ArkTS 回调引用，通过 `napi_create_threadsafe_function()` 创建线程安全函数；C++ 线程调用 `napi_call_threadsafe_function()` 投递数据，运行时再执行 `napi_call_function()` 回调 ArkTS。普通状态被序列化为 JSON 字符串，语音数据使用 `ArrayBuffer`，SEI 则转换为包含 `uuid` 和二进制数据的 JS 对象；对象销毁时释放 thread-safe function 和回调引用。
+
+整体上，HJMedia 的 N-API 链路可以概括为：`ArkTS 业务 API → .so 导出的 n_* 函数 → 参数/句柄转换 → Bridge/产品入口 → RTE 或 Pusher/Player Graph`，异步通知再沿相反方向通过 thread-safe function 返回 ArkTS。相机纹理、YUV、PCM 和编码帧通常仍留在 C++、GPU 或编解码器内部流转，N-API 主要传递控制参数、SurfaceId、状态回调以及少量确实需要交给上层的二进制数据，避免把每帧音视频都跨语言搬运。
